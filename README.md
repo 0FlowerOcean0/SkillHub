@@ -93,6 +93,16 @@ VERSION=1.0.0 Scripts/make_app.sh  # 指定 CFBundleShortVersionString
 
 产物在 `.build/app/` 下，已被 `.gitignore` 忽略。如需分发，可自行对 .app 做 `codesign` 签名与公证，脚本不包含这一步。
 
+### 一键安装 / 升级
+
+打包、安装到「应用程序」并重启，一条命令搞定：
+
+```bash
+Scripts/install_app.sh              # 构建 + 打包 + 安装到 /Applications + 重启
+VERSION=1.1.0 Scripts/install_app.sh
+NO_LAUNCH=1 Scripts/install_app.sh  # 只安装不启动
+```
+
 ## 目录结构
 
 ```
@@ -121,6 +131,7 @@ SkillHub/
 ├── Tests/SkillHubTests/           # 单元测试（130+ 用例）
 ├── Scripts/
 │   └── make_app.sh                # 打包 SkillHub.app
+│   └── install_app.sh             # 一键安装/升级到 /Applications
 ├── docs/
 │   └── competitive-analysis.md    # 竞品对比分析
 ├── CHANGELOG.md
