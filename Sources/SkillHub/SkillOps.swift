@@ -6,13 +6,24 @@ enum SkillOpsError: LocalizedError {
     var errorDescription: String? { if case .message(let m) = self { return m }; return nil }
 }
 
+/// 启用（上架到平台目录）的方式：相对软链（默认）或实体复制
+enum LinkMode {
+    case symlink
+    case copy
+}
+
 /// 管理（启用/禁用/删除）、安装（GitHub / 本地）、调用（复制提示词 / 打开）
 enum SkillOps {
 
     // MARK: - 启用 / 禁用
 
-    /// 在指定 agent 目录创建指向本体的相对软链接
-    static func enable(skill: Skill, in target: AgentTarget) throws {
+    /// copy 模式副本里的标记文件名：disable 靠它区分「复制产生的副本」与「本体」
+    static let copyMarkerName = ".skillhub-copy"
+
+    /// 在指定 agent 目录启用 skill：默认创建指向本体的相对软链接；
+    /// mode 为 .copy 时把本体完整复制到平台目录（副本内写入 .skillhub-copy 标记）。
+    /// 目标已存在同名条目时两种模式都报错，行为语义一致。
+    static func enable(skill: Skill, in target: AgentTarget, mode: LinkMode = .symlink) throws {
         let fm = FileManager.default
         if !target.exists {
             try fm.createDirectory(at: target.dir, withIntermediateDirectories: true)
@@ -21,27 +32,52 @@ enum SkillOps {
         if fm.fileExists(atPath: linkPath.path) || (try? fm.destinationOfSymbolicLink(atPath: linkPath.path)) != nil {
             throw SkillOpsError.message("\(target.displayName) 里已存在同名条目：\(linkPath.lastPathComponent)")
         }
-        let relative = relativePath(from: target.dir, to: skill.canonicalPath)
-        try fm.createSymbolicLink(atPath: linkPath.path, withDestinationPath: relative)
+        switch mode {
+        case .symlink:
+            let relative = relativePath(from: target.dir, to: skill.canonicalPath)
+            try fm.createSymbolicLink(atPath: linkPath.path, withDestinationPath: relative)
+        case .copy:
+            try fm.copyItem(at: skill.canonicalPath, to: linkPath)
+            // 写入副本标记，供 disable 识别这是可复制后删除的副本而非本体
+            try "skillhub copy\n".write(to: linkPath.appendingPathComponent(copyMarkerName),
+                                        atomically: true, encoding: .utf8)
+        }
     }
 
-    /// 只移除软链接；本体目录绝不通过 disable 删除
+    /// 移除软链接或 copy 模式产生的副本；本体目录绝不通过 disable 删除
     static func disable(skill: Skill, in target: AgentTarget) throws {
         let fm = FileManager.default
         let entry = target.dir.appendingPathComponent(skill.canonicalPath.lastPathComponent)
-        guard let _ = try? fm.destinationOfSymbolicLink(atPath: entry.path) else {
+        // 软链：直接删
+        if (try? fm.destinationOfSymbolicLink(atPath: entry.path)) != nil {
+            try fm.removeItem(at: entry)
+            return
+        }
+        // 真实目录：带 .skillhub-copy 标记的是 copy 模式副本，允许删除；
+        // 无标记的按本体处理，照旧拒绝
+        guard fm.fileExists(atPath: entry.appendingPathComponent(copyMarkerName).path) else {
             throw SkillOpsError.message("\(entry.lastPathComponent) 在 \(target.displayName) 里是真实目录（本体），不会自动删除。请先迁移本体。")
         }
         try fm.removeItem(at: entry)
     }
 
-    /// 删除本体：先移除各 agent 目录里的软链，再把本体移入废纸篓
+    /// 删除本体：先清理各 agent 目录里的同名条目，再把本体移入废纸篓。
+    /// 同名条目按类型处理：解析回本体的软链 → 删；带 .skillhub-copy 标记的
+    /// copy 副本 → 删；无标记的真实目录 → 跳过（可能是独立本体，保护不删）。
     static func trash(skill: Skill, targets: [AgentTarget]) throws {
         let fm = FileManager.default
         for t in targets {
             let entry = t.dir.appendingPathComponent(skill.canonicalPath.lastPathComponent)
-            if (try? fm.destinationOfSymbolicLink(atPath: entry.path)) != nil,
-               entry.resolvingSymlinksInPath().path == skill.canonicalPath.path {
+            // 软链：只删解析回本体的（指向别处的同名软链不动）
+            if (try? fm.destinationOfSymbolicLink(atPath: entry.path)) != nil {
+                if entry.resolvingSymlinksInPath().path == skill.canonicalPath.path {
+                    try? fm.removeItem(at: entry)
+                }
+                continue
+            }
+            // 真实目录：带 copy 标记的是副本，随本体一起清理；
+            // 无标记的按本体保护跳过（注意 canonical 本身在平台目录里时也会命中这里，必须跳过）
+            if fm.fileExists(atPath: entry.appendingPathComponent(copyMarkerName).path) {
                 try? fm.removeItem(at: entry)
             }
         }
@@ -263,9 +299,17 @@ enum SkillOps {
 
     // MARK: - 安装
 
-    /// 安装来源：GitHub URL（整仓或子目录）或本地路径。
+    /// 安装来源：GitHub URL（整仓或子目录，支持 `repo@ref` 指定 tag/commit）或本地路径。
     /// 返回安装成功的 skill 目录名列表。
+    /// 说明：现有安装流程没有 lock/版本记录文件（不改其他文件），
+    /// 需要版本信息的调用方（如 UI 接线）请改用 `installWithRef`，它会把实际 checkout 的 ref 带出来。
     static func install(source: String, storeDir: URL, enableTargets: [AgentTarget]) throws -> [String] {
+        try installWithRef(source: source, storeDir: storeDir, enableTargets: enableTargets).installed
+    }
+
+    /// 同 `install`，额外返回 git 源里 `@ref` 指定的版本（tag 或 commit SHA）；无 @ 时为 nil。
+    /// 本地路径 source 不解析 @（路径里含 @ 很常见，只有 git 源才拆 ref）。
+    static func installWithRef(source: String, storeDir: URL, enableTargets: [AgentTarget]) throws -> (installed: [String], resolvedRef: String?) {
         let fm = FileManager.default
         try fm.createDirectory(at: storeDir, withIntermediateDirectories: true)
 
@@ -273,8 +317,9 @@ enum SkillOps {
         let tmp = fm.temporaryDirectory.appendingPathComponent("skillhub-\(UUID().uuidString)")
 
         var rootToSearch: URL
+        var resolvedRef: String? = nil
 
-        if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") || trimmed.hasPrefix("git@") {
+        if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") || trimmed.hasPrefix("git@") || trimmed.hasPrefix("file://") {
             // 解析 github tree 子目录形式
             var repo = trimmed
             var subPath: String? = nil
@@ -284,7 +329,25 @@ enum SkillOps {
                 let parts = rest.split(separator: "/", maxSplits: 1)
                 if parts.count == 2 { subPath = String(parts[1]) }
             }
-            try runGit(["clone", "--depth", "1", repo, tmp.path])
+            // 解析 @ref（git tag 或 commit SHA）。要求 @ 出现在最后一个 / 之后，
+            // 避免误判 git@host:owner/repo 里的用户名 @；ref 含 / 的形式不支持。
+            if let atIdx = repo.lastIndex(of: "@"),
+               let slashIdx = repo.lastIndex(of: "/"),
+               atIdx > slashIdx {
+                let ref = String(repo[repo.index(after: atIdx)...])
+                guard ref.range(of: #"^[A-Za-z0-9][A-Za-z0-9._-]*$"#, options: .regularExpression) != nil else {
+                    throw SkillOpsError.message("@ 后面的版本号不合法：\(ref.isEmpty ? "(空)" : ref)（支持 tag 名或 commit SHA）")
+                }
+                resolvedRef = ref
+                repo = String(repo[..<atIdx])
+            }
+            // 指定了 ref 时不做浅克隆（否则 tag/SHA 可能不在浅历史里，checkout 会失败）
+            if resolvedRef != nil {
+                try runGit(["clone", repo, tmp.path])
+                try runGit(["-C", tmp.path, "checkout", resolvedRef!], action: "checkout \(resolvedRef!)")
+            } else {
+                try runGit(["clone", "--depth", "1", repo, tmp.path])
+            }
             rootToSearch = subPath.map { tmp.appendingPathComponent($0) } ?? tmp
         } else {
             let local = URL(fileURLWithPath: (trimmed as NSString).expandingTildeInPath)
@@ -322,7 +385,7 @@ enum SkillOps {
                 }
             }
         }
-        return installed
+        return (installed, resolvedRef)
     }
 
     private static func findSkillDirs(in root: URL) -> [URL] {
@@ -345,7 +408,7 @@ enum SkillOps {
         return found
     }
 
-    private static func runGit(_ args: [String]) throws {
+    private static func runGit(_ args: [String], action: String = "clone") throws {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         p.arguments = args
@@ -357,7 +420,7 @@ enum SkillOps {
         if p.terminationStatus != 0 {
             let data = errPipe.fileHandleForReading.readDataToEndOfFile()
             let msg = String(data: data, encoding: .utf8) ?? "git 失败"
-            throw SkillOpsError.message("git clone 失败：\(msg.prefix(300))")
+            throw SkillOpsError.message("git \(action) 失败：\(msg.prefix(300))")
         }
     }
 

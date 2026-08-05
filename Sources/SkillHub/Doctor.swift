@@ -122,6 +122,22 @@ enum Doctor {
                     ))
                 }
             }
+            // 9. 安全扫描：高危/中危转为 issue（低危只体现在报告分数里，避免噪音）
+            let report = SecurityScanner.scan(skill: skill)
+            let risky = report.findings.filter { $0.severity != .low }
+            if !risky.isEmpty {
+                let preview = risky.prefix(3)
+                    .map { "\($0.file)：\($0.message)" }
+                    .joined(separator: "\n")
+                issues.append(DoctorIssue(
+                    severity: risky.contains { $0.severity == .high } ? .error : .warning,
+                    skillName: skill.name,
+                    title: "\(skill.name)：安全扫描命中 \(risky.count) 条规则（评分 \(report.score)/100，\(report.grade.rawValue)）",
+                    detail: preview,
+                    fixAction: .none,
+                    hintActions: [.revealInFinder(skill.canonicalPath)]
+                ))
+            }
         }
 
         return issues.sorted { $0.severity < $1.severity }

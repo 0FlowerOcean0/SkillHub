@@ -286,6 +286,9 @@ private struct MarketplaceRow: View {
                     }
                     Link("详情", destination: skill.skillPageURL)
                         .font(.caption)
+                    Text("多 skill 仓库将整仓安装")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
                 }
             }
             Spacer()

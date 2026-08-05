@@ -81,6 +81,12 @@ struct PresetStore {
         presets[idx].skillNames.removeAll { $0 == skillName }
     }
 
+    /// 改写场景的目标平台集合（空数组 = 对所有非本体库平台生效）
+    static func setTargets(_ presets: inout [SkillPreset], id: UUID, targetIDs: [String]) {
+        guard let idx = presets.firstIndex(where: { $0.id == id }) else { return }
+        presets[idx].targetIDs = targetIDs
+    }
+
     /// 解析生效目标平台：targetIDs 为空时默认对所有非本体库平台生效
     static func effectiveTargets(for preset: SkillPreset, allTargets: [AgentTarget]) -> [AgentTarget] {
         let nonStore = allTargets.filter { $0.id != AgentTarget.canonicalID }

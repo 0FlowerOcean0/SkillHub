@@ -293,6 +293,8 @@ struct InstallSheet: View {
 
             TextField("https://github.com/owner/repo 或 ~/path/to/skill", text: $source)
                 .textFieldStyle(.roundedBorder)
+            Text("支持 `仓库地址@tag` 指定版本，如 https://github.com/owner/repo@v1.0")
+                .font(.caption).foregroundStyle(.secondary)
 
             Text("安装到本体库 \(state.storeDir.path)，并软链到：").font(.callout)
             HStack {
@@ -627,7 +629,11 @@ struct ManagerSheet: View {
         case sources = "来源"
         case sync = "同步"
         case cleanup = "清理"
+        case projects = "项目"
     }
+
+    /// 「项目」tab 里当前选中查看的项目
+    @State private var selectedProjectID: UUID? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -668,6 +674,8 @@ struct ManagerSheet: View {
                         syncContent
                     case .cleanup:
                         cleanupContent
+                    case .projects:
+                        projectsContent
                     }
                 }
                 .padding(20)
@@ -967,6 +975,183 @@ struct ManagerSheet: View {
                     }
                 }
             }
+        }
+    }
+    // MARK: - 项目工作区
+
+    private var projectsContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("项目工作区").font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Button {
+                    chooseProjectDirectory()
+                } label: {
+                    Label("添加项目…", systemImage: "plus")
+                }
+                .controlSize(.small)
+            }
+            Text("注册含有 .claude/skills 等约定目录的项目，在项目与本体库之间双向同步 skills。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if state.projectWorkspaces.isEmpty {
+                ContentUnavailableView(
+                    "还没有注册项目",
+                    systemImage: "folder.badge.plus",
+                    description: Text("点击「添加项目…」选择项目目录，SkillHub 会扫描项目里的项目级 skills，可以把它们收进本体库，或把本体库的 skills 导入项目")
+                )
+            } else {
+                ForEach(state.projectWorkspaces) { ws in
+                    projectRow(ws)
+                }
+
+                if let selected = state.projectWorkspaces.first(where: { $0.id == selectedProjectID }) {
+                    Divider()
+                    projectDetail(selected)
+                } else {
+                    Text("点击上方项目查看扫描结果")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+    }
+
+    private func projectRow(_ ws: ProjectWorkspace) -> some View {
+        let isSelected = selectedProjectID == ws.id
+        return HStack(spacing: 10) {
+            Image(systemName: "folder.fill")
+                .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(ws.name)
+                    .font(.callout.bold())
+                Text(ws.path.path)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            if let entries = state.projectScanResults[ws.id] {
+                Text("\(entries.count) 个 skills")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+            Button(role: .destructive) {
+                state.removeProject(id: ws.id)
+                if selectedProjectID == ws.id { selectedProjectID = nil }
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+            .help("移除项目（只取消注册，不删除文件）")
+        }
+        .padding(8)
+        .background(isSelected ? Color.accentColor.opacity(0.08) : Color(nsColor: .controlBackgroundColor).opacity(0.3))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            selectedProjectID = ws.id
+            if state.projectScanResults[ws.id] == nil {
+                state.scanProject(ws)
+            }
+        }
+    }
+
+    private func projectDetail(_ ws: ProjectWorkspace) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("「\(ws.name)」里的 skills")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer()
+                if state.scanningProjectID == ws.id {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                // 从本体库导入 skill 到项目（默认 .claude/skills）
+                Menu {
+                    if state.skills.isEmpty {
+                        Text("本体库还没有 skills")
+                    } else {
+                        ForEach(state.skills.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }) { skill in
+                            Button(skill.name) {
+                                state.exportSkillToProject(skill, to: ws)
+                            }
+                        }
+                    }
+                } label: {
+                    Label("从本体库导入 skill…", systemImage: "square.and.arrow.down")
+                }
+                .controlSize(.small)
+                .disabled(state.skills.isEmpty)
+
+                Button {
+                    state.scanProject(ws)
+                } label: {
+                    Label("重新扫描", systemImage: "arrow.clockwise")
+                }
+                .controlSize(.small)
+                .disabled(state.scanningProjectID != nil)
+            }
+
+            let entries = state.projectScanResults[ws.id] ?? []
+            if state.scanningProjectID == ws.id && entries.isEmpty {
+                Text("正在扫描…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if entries.isEmpty {
+                Text("项目里没有发现 skills（查找 .claude/skills、.agents/skills 等约定目录）")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(entries) { entry in
+                    HStack(alignment: .top, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(entry.skillName)
+                                .font(.callout.bold())
+                            HStack(spacing: 8) {
+                                Text(entry.source)
+                                    .font(.system(size: 10, design: .monospaced))
+                                Text("\(entry.fileCount) 个文件")
+                                Text(entry.sizeDisplay)
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            if !entry.descriptionText.isEmpty {
+                                Text(entry.descriptionText)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        Spacer()
+                        Button {
+                            state.importProjectSkill(entry, from: ws)
+                        } label: {
+                            Label("收进本体库", systemImage: "tray.and.arrow.down")
+                        }
+                        .controlSize(.small)
+                        .disabled(state.isBusy)
+                    }
+                    .padding(.vertical, 4)
+                    Divider()
+                }
+            }
+        }
+    }
+
+    private func chooseProjectDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "添加项目"
+        panel.message = "选择含有 skills 目录的项目根目录"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        state.addProject(path: url)
+        if let added = state.projectWorkspaces.first(where: { $0.normalizedPath == ProjectWorkspace.normalize(url) }) {
+            selectedProjectID = added.id
         }
     }
 }

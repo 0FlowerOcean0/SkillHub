@@ -76,6 +76,18 @@ final class AppState: ObservableObject {
     @Published var selectedPresetID: UUID? = nil
     private let presetStore = PresetStore()
 
+    // MARK: - 项目工作区
+    @Published var projectWorkspaces: [ProjectWorkspace] = []
+    /// 扫描结果按需加载：选中项目时扫描并缓存，项目 id → skills 条目
+    @Published var projectScanResults: [UUID: [ProjectSkillEntry]] = [:]
+    /// 正在扫描的项目 id（用于行内进度指示；nil = 空闲）
+    @Published var scanningProjectID: UUID? = nil
+    private let projectStore = ProjectWorkspaceStore()
+
+    init() {
+        projectWorkspaces = projectStore.workspaces
+    }
+
     // MARK: - 自定义 Agent 平台
     @AppStorage("customAgentTargets") private var customAgentTargetsRaw: String = ""
 
@@ -372,6 +384,81 @@ final class AppState: ObservableObject {
         refresh()
     }
 
+    /// 改写场景的目标平台集合并持久化（空数组 = 全部平台生效）
+    func setPresetTargets(_ preset: SkillPreset, targetIDs: [String]) {
+        var list = presets
+        PresetStore.setTargets(&list, id: preset.id, targetIDs: targetIDs)
+        presets = list
+        presetStore.save(list)
+    }
+
+    // MARK: - 项目工作区
+
+    /// 注册项目目录（名称默认取目录名），重复注册时给出错误反馈
+    func addProject(path: URL) {
+        do {
+            let ws = try projectStore.add(path: path)
+            projectWorkspaces = projectStore.workspaces
+            notice("已添加项目：\(ws.name)")
+            scanProject(ws)
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    func removeProject(id: UUID) {
+        let name = projectWorkspaces.first(where: { $0.id == id })?.name
+        projectStore.remove(id: id)
+        projectWorkspaces = projectStore.workspaces
+        projectScanResults[id] = nil
+        notice("已移除项目\(name.map { "：\($0)" } ?? "")")
+    }
+
+    /// 按需扫描项目里的 skills（重复调用直接重扫刷新缓存）
+    func scanProject(_ workspace: ProjectWorkspace) {
+        guard scanningProjectID == nil else { return }
+        scanningProjectID = workspace.id
+        Task.detached { [weak self] in
+            do {
+                let entries = try ProjectScanner.scan(workspace: workspace)
+                Task { @MainActor [weak self] in
+                    self?.projectScanResults[workspace.id] = entries
+                    self?.scanningProjectID = nil
+                }
+            } catch {
+                let msg = error.localizedDescription
+                Task { @MainActor [weak self] in
+                    self?.projectScanResults[workspace.id] = []
+                    self?.scanningProjectID = nil
+                    self?.lastError = msg
+                }
+            }
+        }
+    }
+
+    /// 把项目里的 skill 复制进本体库（同名冲突报错不覆盖）
+    func importProjectSkill(_ entry: ProjectSkillEntry, from workspace: ProjectWorkspace) {
+        do {
+            try ProjectSync.importToStore(entry: entry, workspace: workspace, storeDir: storeDir)
+            notice("已把 \(entry.skillName) 收进本体库")
+            refresh()
+            scanProject(workspace)
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// 把本体库 skill 复制到项目的约定子目录（默认 .claude/skills）
+    func exportSkillToProject(_ skill: Skill, to workspace: ProjectWorkspace, subdir: String = ".claude/skills") {
+        do {
+            try ProjectSync.exportToProject(skillCanonicalPath: skill.canonicalPath, workspace: workspace, subdir: subdir)
+            notice("已把 \(skill.name) 导入项目「\(workspace.name)」")
+            scanProject(workspace)
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
     // MARK: - 自定义 Agent 平台管理
 
     func addCustomAgent(name: String, path: String) {
@@ -408,6 +495,18 @@ final class AppState: ObservableObject {
                 try SkillOps.enable(skill: skill, in: target)
                 notice("已在 \(target.displayName) 启用 \(skill.name)")
             }
+            refresh()
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// 以副本方式启用：把本体完整复制到平台目录（副本带 .skillhub-copy 标记，
+    /// disable/trash 会识别并允许删除）。错误处理与 refresh 复用 toggle 的模式。
+    func copyEnable(skill: Skill, to target: AgentTarget) {
+        do {
+            try SkillOps.enable(skill: skill, in: target, mode: .copy)
+            notice("已把 \(skill.name) 复制到 \(target.displayName)")
             refresh()
         } catch {
             lastError = error.localizedDescription
@@ -589,9 +688,12 @@ final class AppState: ObservableObject {
         let store = storeDir
         Task.detached { [weak self] in
             do {
-                let names = try SkillOps.install(source: source, storeDir: store, enableTargets: enableIn)
+                let result = try SkillOps.installWithRef(source: source, storeDir: store, enableTargets: enableIn)
+                let names = result.installed.joined(separator: ", ")
+                // @tag 安装时把实际 checkout 的版本号带进通知
+                let versionNote = result.resolvedRef.map { "（版本 \($0)）" } ?? ""
                 Task { @MainActor [weak self] in
-                    self?.notice("安装成功：\(names.joined(separator: ", "))")
+                    self?.notice("安装成功：\(names)\(versionNote)")
                     self?.isBusy = false
                     self?.refresh()
                     completion(true)

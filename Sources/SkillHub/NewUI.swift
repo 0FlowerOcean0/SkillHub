@@ -683,22 +683,39 @@ struct PresetList: View {
                 Text("\(preset.skillNames.count) 个 skill")
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                let targets = PresetStore.effectiveTargets(for: preset, allTargets: state.targets)
-                HStack(spacing: 4) {
+                // 目标平台编辑：点击 chip 切换生效平台；全部选中 = 不限制（targetIDs 为空）
+                let editableTargets = state.targets.filter { $0.id != AgentTarget.canonicalID && $0.exists }
+                let effectiveIDs = Set(PresetStore.effectiveTargets(for: preset, allTargets: state.targets).map(\.id))
+                WrappingHStack(spacing: 4, lineSpacing: 4) {
                     Text("目标平台：")
-                    if targets.isEmpty {
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if editableTargets.isEmpty {
                         Text("没有可用的目标平台")
+                            .font(.caption)
                             .foregroundStyle(.tertiary)
                     } else {
-                        ForEach(targets) { t in
-                            Text(t.displayName)
-                                .padding(.horizontal, 6).padding(.vertical, 2)
-                                .background(.quaternary, in: Capsule())
+                        ForEach(editableTargets) { t in
+                            let isOn = effectiveIDs.contains(t.id)
+                            Button {
+                                togglePresetTarget(preset, target: t, effectiveIDs: effectiveIDs)
+                            } label: {
+                                Text(t.displayName)
+                                    .font(.caption)
+                                    .padding(.horizontal, 6).padding(.vertical, 2)
+                                    .background(isOn ? Color.accentColor.opacity(0.15) : Color.secondary.opacity(0.08), in: Capsule())
+                                    .foregroundStyle(isOn ? Color.accentColor : Color.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .help(isOn ? "点击从「\(preset.name)」的生效平台中移除" : "点击加入「\(preset.name)」的生效平台")
+                        }
+                        if preset.targetIDs.isEmpty {
+                            Text("未限定 = 全部平台")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
                         }
                     }
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
             }
             Spacer()
             Button {
@@ -720,6 +737,22 @@ struct PresetList: View {
             .disabled(preset.skillNames.isEmpty)
         }
         .padding(12)
+    }
+
+    /// 切换某个平台是否对场景生效：以当前生效集合为准做增删，
+    /// 改回"全平台"时归一化为空数组（空 = 全部生效，兼容旧语义）
+    private func togglePresetTarget(_ preset: SkillPreset, target: AgentTarget, effectiveIDs: Set<String>) {
+        var next = effectiveIDs
+        if next.contains(target.id) {
+            next.remove(target.id)
+        } else {
+            next.insert(target.id)
+        }
+        let allIDs = Set(state.targets.filter { $0.id != AgentTarget.canonicalID }.map(\.id))
+        let newTargetIDs = next == allIDs
+            ? []
+            : state.targets.filter { next.contains($0.id) }.map(\.id)
+        state.setPresetTargets(preset, targetIDs: newTargetIDs)
     }
 }
 
@@ -1029,6 +1062,28 @@ struct SkillDetailPanel: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
+            }
+
+            // 以副本方式启用：复制本体到平台目录（而非软链），适合需要离线/独立分发的平台
+            let copyCandidates = state.targets.filter {
+                $0.id != AgentTarget.canonicalID && $0.exists && skill.presence[$0.id] == nil
+            }
+            if !copyCandidates.isEmpty {
+                Menu {
+                    ForEach(copyCandidates) { t in
+                        Button {
+                            state.copyEnable(skill: skill, to: t)
+                        } label: {
+                            Label(t.displayName, systemImage: iconForAgent(t.id))
+                        }
+                    }
+                } label: {
+                    Label("以副本方式启用到…", systemImage: "doc.on.doc")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("复制本体到平台目录（副本带标记，禁用/删除时会一并清理）")
             }
         }
     }

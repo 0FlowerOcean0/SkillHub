@@ -215,4 +215,241 @@ final class SkillOpsTests: XCTestCase {
         XCTAssertTrue(box.fm.fileExists(atPath: stray.appendingPathComponent("SKILL.md").path),
                       "失败时散落目录应保持不变")
     }
+
+    // MARK: - copy 启用模式
+
+    func testEnableCopyModeCopiesContentAndMarker() throws {
+        let box = try TempSandbox()
+        let canonical = try box.makeSkillDir("store/skills/cp",
+                                             frontmatter: "---\nname: cp\n---\n",
+                                             extraBody: "copy-body\n")
+        let target = box.makeTarget("agentA", "a/skills")
+        let skill = Skill(name: "cp", descriptionText: "", version: nil, canonicalPath: canonical)
+
+        try SkillOps.enable(skill: skill, in: target, mode: .copy)
+
+        let copy = target.dir.appendingPathComponent("cp")
+        // 是真实目录而不是软链
+        XCTAssertNil(try? box.fm.destinationOfSymbolicLink(atPath: copy.path))
+        // 内容与本体一致
+        let src = try String(contentsOf: canonical.appendingPathComponent("SKILL.md"), encoding: .utf8)
+        let dst = try String(contentsOf: copy.appendingPathComponent("SKILL.md"), encoding: .utf8)
+        XCTAssertEqual(src, dst)
+        XCTAssertTrue(dst.contains("copy-body"))
+        // 含副本标记文件
+        XCTAssertTrue(box.fm.fileExists(atPath: copy.appendingPathComponent(SkillOps.copyMarkerName).path))
+    }
+
+    func testEnableCopyModeConflictThrowsLikeSymlink() throws {
+        let box = try TempSandbox()
+        let canonical = try box.makeSkillDir("store/skills/cp2", frontmatter: "---\nname: cp2\n---\n")
+        let target = box.makeTarget("agentA", "a/skills")
+        let skill = Skill(name: "cp2", descriptionText: "", version: nil, canonicalPath: canonical)
+
+        try SkillOps.enable(skill: skill, in: target, mode: .copy)
+        // 目标已存在时与软链模式一样报错
+        XCTAssertThrowsError(try SkillOps.enable(skill: skill, in: target, mode: .copy)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("已存在同名条目"))
+        }
+    }
+
+    func testDisableRemovesCopyWithMarker() throws {
+        let box = try TempSandbox()
+        let canonical = try box.makeSkillDir("store/skills/cpd", frontmatter: "---\nname: cpd\n---\n")
+        let target = box.makeTarget("agentA", "a/skills")
+        let skill = Skill(name: "cpd", descriptionText: "", version: nil, canonicalPath: canonical)
+
+        try SkillOps.enable(skill: skill, in: target, mode: .copy)
+        let copy = target.dir.appendingPathComponent("cpd")
+        XCTAssertTrue(box.fm.fileExists(atPath: copy.path))
+
+        try SkillOps.disable(skill: skill, in: target)
+        // 副本被删除，本体不动
+        XCTAssertFalse(box.fm.fileExists(atPath: copy.path))
+        XCTAssertTrue(box.fm.fileExists(atPath: canonical.appendingPathComponent("SKILL.md").path))
+    }
+
+    func testDisableStillRefusesRealDirectoryWithoutMarker() throws {
+        // 手工放进平台目录的真实目录（无 .skillhub-copy 标记）按本体保护，disable 仍拒绝
+        let box = try TempSandbox()
+        let real = try box.makeSkillDir("a/skills/real2", frontmatter: "---\nname: real2\n---\n")
+        let target = box.makeTarget("agentA", "a/skills")
+        let skill = Skill(name: "real2", descriptionText: "", version: nil, canonicalPath: real)
+
+        XCTAssertThrowsError(try SkillOps.disable(skill: skill, in: target)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("本体"))
+        }
+        XCTAssertTrue(box.fm.fileExists(atPath: real.appendingPathComponent("SKILL.md").path))
+    }
+
+    // MARK: - install @ref（git tag / commit SHA）
+
+    /// 在沙盒里现场 git init 一个仓库：v1 打 tag，HEAD 再前进一个 commit
+    private func makeGitFixtureRepo(_ box: TempSandbox) throws -> URL {
+        let repo = box.root.appendingPathComponent("repo", isDirectory: true)
+        try box.fm.createDirectory(at: repo, withIntermediateDirectories: true)
+        try runTestGit(["init", "-b", "main"], in: repo)
+        let skillDir = repo.appendingPathComponent("myskill", isDirectory: true)
+        try box.fm.createDirectory(at: skillDir, withIntermediateDirectories: true)
+        try "v1 content\n".write(to: skillDir.appendingPathComponent("SKILL.md"),
+                                 atomically: true, encoding: .utf8)
+        try runTestGit(["add", "."], in: repo)
+        try runTestGit(["-c", "user.email=test@example.com", "-c", "user.name=test",
+                        "commit", "-m", "v1"], in: repo)
+        try runTestGit(["tag", "v1.0"], in: repo)
+        // HEAD 前进到 v2，验证 @v1.0 装的是 tag 版本而不是 HEAD
+        try "v2 content\n".write(to: skillDir.appendingPathComponent("SKILL.md"),
+                                 atomically: true, encoding: .utf8)
+        try runTestGit(["add", "."], in: repo)
+        try runTestGit(["-c", "user.email=test@example.com", "-c", "user.name=test",
+                        "commit", "-m", "v2"], in: repo)
+        return repo
+    }
+
+    private func runTestGit(_ args: [String], in dir: URL, timeout: TimeInterval = 60) throws {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        p.arguments = args
+        p.currentDirectoryURL = dir
+        let errPipe = Pipe()
+        p.standardError = errPipe
+        p.standardOutput = Pipe()
+        try p.run()
+        let deadline = Date().addingTimeInterval(timeout)
+        while p.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        if p.isRunning {
+            p.terminate()
+            XCTFail("git \(args.first ?? "") 超时（\(timeout)s）")
+            return
+        }
+        if p.terminationStatus != 0 {
+            let msg = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            XCTFail("git \(args.joined(separator: " ")) 失败：\(msg)")
+        }
+    }
+
+    func testInstallWithTagRefChecksOutTaggedVersion() throws {
+        let box = try TempSandbox()
+        let repo = try makeGitFixtureRepo(box)
+        let store = box.root.appendingPathComponent("store/skills", isDirectory: true)
+
+        let result = try SkillOps.installWithRef(source: "file://\(repo.path)@v1.0",
+                                                 storeDir: store, enableTargets: [])
+        XCTAssertEqual(result.installed, ["myskill"])
+        XCTAssertEqual(result.resolvedRef, "v1.0")
+        let md = try String(contentsOf: store.appendingPathComponent("myskill/SKILL.md"), encoding: .utf8)
+        XCTAssertTrue(md.contains("v1 content"), "应 checkout 到 tag 版本而不是 HEAD 的 v2")
+    }
+
+    func testInstallWithCommitSHARef() throws {
+        let box = try TempSandbox()
+        let repo = try makeGitFixtureRepo(box)
+        let store = box.root.appendingPathComponent("store/skills", isDirectory: true)
+
+        // 取 v1.0 的完整 SHA 做 ref
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        p.arguments = ["rev-parse", "v1.0"]
+        p.currentDirectoryURL = repo
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = Pipe()
+        try p.run()
+        p.waitUntilExit()
+        let sha = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        XCTAssertEqual(sha.count, 40)
+
+        let result = try SkillOps.installWithRef(source: "file://\(repo.path)@\(sha)",
+                                                 storeDir: store, enableTargets: [])
+        XCTAssertEqual(result.resolvedRef, sha)
+        let md = try String(contentsOf: store.appendingPathComponent("myskill/SKILL.md"), encoding: .utf8)
+        XCTAssertTrue(md.contains("v1 content"))
+    }
+
+    func testInstallWithBadRefThrowsCheckoutError() throws {
+        let box = try TempSandbox()
+        let repo = try makeGitFixtureRepo(box)
+        let store = box.root.appendingPathComponent("store/skills", isDirectory: true)
+
+        XCTAssertThrowsError(try SkillOps.install(source: "file://\(repo.path)@nope-9.9",
+                                                  storeDir: store, enableTargets: [])) { error in
+            XCTAssertTrue(error.localizedDescription.contains("checkout"),
+                          "坏 ref 应抛明确的 checkout 错误，实际：\(error.localizedDescription)")
+        }
+        XCTAssertFalse(box.fm.fileExists(atPath: store.appendingPathComponent("myskill").path),
+                       "失败后不应留下安装产物")
+    }
+
+    func testInstallLocalPathContainingAtSignIsNotParsedAsRef() throws {
+        // 本地路径里含 @ 很常见，不能当成 @ref 拆
+        let box = try TempSandbox()
+        let dir = try box.makeSkillDir("weird@dir/myskill", frontmatter: "---\nname: myskill\n---\n")
+        let store = box.root.appendingPathComponent("store/skills", isDirectory: true)
+
+        let result = try SkillOps.installWithRef(source: dir.path, storeDir: store, enableTargets: [])
+        XCTAssertEqual(result.installed, ["myskill"])
+        XCTAssertNil(result.resolvedRef)
+        XCTAssertTrue(box.fm.fileExists(atPath: store.appendingPathComponent("myskill/SKILL.md").path))
+    }
+
+    func testInstallGitSourceWithoutRefKeepsShallowHead() throws {
+        // 无 @ 时行为不变：装到 HEAD（v2），resolvedRef 为 nil
+        let box = try TempSandbox()
+        let repo = try makeGitFixtureRepo(box)
+        let store = box.root.appendingPathComponent("store/skills", isDirectory: true)
+
+        let result = try SkillOps.installWithRef(source: "file://\(repo.path)",
+                                                 storeDir: store, enableTargets: [])
+        XCTAssertNil(result.resolvedRef)
+        let md = try String(contentsOf: store.appendingPathComponent("myskill/SKILL.md"), encoding: .utf8)
+        XCTAssertTrue(md.contains("v2 content"))
+    }
+
+    // MARK: - trash 联动清理 copy 副本
+
+    func testTrashRemovesSymlinksAndCopyCopiesButProtectsRealDirs() throws {
+        let box = try TempSandbox()
+        let canonical = try box.makeSkillDir("store/skills/x", frontmatter: "---\nname: x\n---\n")
+        let targetLink = box.makeTarget("agentA", "a/skills")
+        let targetCopy = box.makeTarget("agentB", "b/skills")
+        let targetReal = box.makeTarget("agentC", "c/skills")
+        let skill = Skill(name: "x", descriptionText: "", version: nil, canonicalPath: canonical)
+
+        // 软链启用 + copy 启用
+        try SkillOps.enable(skill: skill, in: targetLink)
+        try SkillOps.enable(skill: skill, in: targetCopy, mode: .copy)
+        // 手工放进平台目录的同名真实目录（无标记，按本体保护）
+        let realDir = try box.makeSkillDir("c/skills/x", frontmatter: "---\nname: x\n---\n")
+
+        try SkillOps.trash(skill: skill, targets: [targetLink, targetCopy, targetReal])
+
+        XCTAssertFalse(box.fm.fileExists(atPath: targetLink.dir.appendingPathComponent("x").path),
+                       "解析回本体的软链应被删除")
+        XCTAssertFalse(box.fm.fileExists(atPath: targetCopy.dir.appendingPathComponent("x").path),
+                       "copy 副本应被联动清理")
+        XCTAssertTrue(box.fm.fileExists(atPath: realDir.appendingPathComponent("SKILL.md").path),
+                      "无标记的真实目录必须保留")
+        XCTAssertFalse(box.fm.fileExists(atPath: canonical.path), "本体应已移入废纸篓")
+    }
+
+    func testTrashKeepsSymlinkPointingElsewhere() throws {
+        let box = try TempSandbox()
+        let canonical = try box.makeSkillDir("store/skills/y", frontmatter: "---\nname: y\n---\n")
+        let other = try box.makeSkillDir("elsewhere/y", frontmatter: "---\nname: y\n---\n")
+        let target = box.makeTarget("agentA", "a/skills")
+        let skill = Skill(name: "y", descriptionText: "", version: nil, canonicalPath: canonical)
+
+        // 平台目录里放一个指向别处的同名软链，trash 不应误删
+        try box.fm.createDirectory(at: target.dir, withIntermediateDirectories: true)
+        let link = target.dir.appendingPathComponent("y")
+        try box.fm.createSymbolicLink(atPath: link.path, withDestinationPath: other.path)
+
+        try SkillOps.trash(skill: skill, targets: [target])
+
+        XCTAssertNotNil(try? box.fm.destinationOfSymbolicLink(atPath: link.path),
+                        "指向别处的同名软链必须保留")
+        XCTAssertTrue(box.fm.fileExists(atPath: other.appendingPathComponent("SKILL.md").path))
+        XCTAssertFalse(box.fm.fileExists(atPath: canonical.path), "本体应已移入废纸篓")
+    }
 }
