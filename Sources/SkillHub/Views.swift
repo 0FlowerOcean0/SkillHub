@@ -356,7 +356,7 @@ struct DoctorSheet: View {
                     }
                     .controlSize(.small)
                 }
-                Button("重新体检") { state.refresh() }
+                Button("重新体检") { state.refresh(force: true) }
                 Button("关闭") { dismiss() }
             }
             .padding(.horizontal, 20)
@@ -641,7 +641,7 @@ struct ManagerSheet: View {
             HStack {
                 Text("智能管家").font(.title2.bold())
                 Spacer()
-                Button("刷新") { state.refresh() }
+                Button("刷新") { state.refresh(force: true) }
                 Button("关闭") { dismiss() }
             }
             .padding(.horizontal, 20)

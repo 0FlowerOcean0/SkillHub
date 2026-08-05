@@ -39,7 +39,7 @@ struct NewContentView: View {
                     Button { state.showInstall = true } label: {
                         Label("安装", systemImage: "plus")
                     }
-                    Button { state.refresh() } label: {
+                    Button { state.refresh(force: true) } label: {
                         Label("刷新", systemImage: "arrow.clockwise")
                     }
                     .keyboardShortcut("r")

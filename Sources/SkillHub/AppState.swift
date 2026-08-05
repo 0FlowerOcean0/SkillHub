@@ -253,14 +253,26 @@ final class AppState: ObservableObject {
         }
     }
 
-    func refresh() {
+    /// 刷新 skills 列表。
+    /// - force: false 时走逐 skill 指纹缓存（启动秒开，只有变化的 skill 才重扫）；
+    ///   true 时绕过缓存全量重扫（手动「刷新 / 重新体检」按钮）。
+    func refresh(force: Bool = false) {
         sanitizeCustomAgentTargets()
         autoDetectPlatforms()
         let targets = allTargets
         self.targets = targets
-        isBusy = true
         Task.detached { [weak self] in
-            let outcome = SkillScanner.scan(targets: targets)
+            let cached = force ? nil : ScanCache.load()
+            let plan = SkillScanner.plan(targets: targets)
+            // 只有真的需要重扫时才显示「扫描中」，缓存全命中则静默完成
+            if force || !plan.fullyCovered(by: cached) {
+                Task { @MainActor [weak self] in
+                    self?.isBusy = true
+                }
+            }
+            let result = SkillScanner.execute(plan: plan, cache: cached)
+            result.cache.save()
+            let outcome = result.outcome
             let issues = Doctor.run(outcome: outcome, targets: targets)
             let lockFile = SkillLockFile.load(from: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".agents/.skill-lock.json"))
             Task { @MainActor [weak self] in
