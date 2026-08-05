@@ -251,14 +251,13 @@ final class AppState: ObservableObject {
             let outcome = SkillScanner.scan(targets: targets)
             let issues = Doctor.run(outcome: outcome, targets: targets)
             let lockFile = SkillLockFile.load(from: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".agents/.skill-lock.json"))
-            await MainActor.run {
-                guard let self else { return }
-                self.skills = outcome.skills
-                self.brokenLinks = outcome.brokenLinks
-                self.issues = issues
-                self.lockFile = lockFile
-                self.refreshManager()
-                self.isBusy = false
+            Task { @MainActor [weak self] in
+                self?.skills = outcome.skills
+                self?.brokenLinks = outcome.brokenLinks
+                self?.issues = issues
+                self?.lockFile = lockFile
+                self?.refreshManager()
+                self?.isBusy = false
             }
         }
     }
@@ -522,20 +521,15 @@ final class AppState: ObservableObject {
                     }
                 }
             }
-            await MainActor.run {
-                guard let self else { return }
-                self.isBusy = false
-                var parts: [String] = []
-                if migrated > 0 { parts.append("收编 \(migrated) 个") }
-                if relinked > 0 { parts.append("链接 \(relinked) 个到已有版本") }
-                if failed.isEmpty {
-                    self.notice(parts.isEmpty ? "没有需要处理的 skills" : "已\(parts.joined(separator: "，"))")
-                } else {
-                    parts.append("\(failed.count) 个失败")
-                    self.notice(parts.joined(separator: "，"))
-                    self.lastError = failed.map { "\($0.0): \($0.1)" }.joined(separator: "\n")
-                }
-                self.refresh()
+            // 在后台算好文案，跳回 MainActor 时只携带不可变值（避免并发捕获警告）
+            var parts: [String] = []
+            if migrated > 0 { parts.append("收编 \(migrated) 个") }
+            if relinked > 0 { parts.append("链接 \(relinked) 个到已有版本") }
+            if !failed.isEmpty { parts.append("\(failed.count) 个失败") }
+            let message = parts.isEmpty ? "没有需要处理的 skills" : (failed.isEmpty ? "已\(parts.joined(separator: "，"))" : parts.joined(separator: "，"))
+            let detail = failed.isEmpty ? nil : failed.map { "\($0.0): \($0.1)" }.joined(separator: "\n")
+            Task { @MainActor [weak self] in
+                self?.finishBusyOperation(message: message, error: detail)
             }
         }
     }
@@ -581,15 +575,11 @@ final class AppState: ObservableObject {
         isBusy = true
         Task.detached { [weak self] in
             let result = SkillOps.fixAll(fixable, targets: currentTargets)
-            await MainActor.run {
-                guard let self else { return }
-                self.isBusy = false
-                if result.failed.isEmpty {
-                    self.notice("已修复 \(result.fixed) 个问题")
-                } else {
-                    self.notice("修复了 \(result.fixed) 个，\(result.failed.count) 个失败")
-                }
-                self.refresh()
+            let message = result.failed.isEmpty
+                ? "已修复 \(result.fixed) 个问题"
+                : "修复了 \(result.fixed) 个，\(result.failed.count) 个失败"
+            Task { @MainActor [weak self] in
+                self?.finishBusyOperation(message: message, error: nil)
             }
         }
     }
@@ -600,14 +590,14 @@ final class AppState: ObservableObject {
         Task.detached { [weak self] in
             do {
                 let names = try SkillOps.install(source: source, storeDir: store, enableTargets: enableIn)
-                await MainActor.run {
+                Task { @MainActor [weak self] in
                     self?.notice("安装成功：\(names.joined(separator: ", "))")
                     self?.isBusy = false
                     self?.refresh()
                     completion(true)
                 }
             } catch {
-                await MainActor.run {
+                Task { @MainActor [weak self] in
                     self?.lastError = error.localizedDescription
                     self?.isBusy = false
                     completion(false)
@@ -671,14 +661,10 @@ final class AppState: ObservableObject {
             let currentTargets = targets
             Task.detached { [weak self] in
                 let result = SkillManifest.executeImport(plan: plan, storeDir: store, targets: currentTargets)
-                await MainActor.run {
-                    guard let self else { return }
-                    self.isBusy = false
-                    self.notice(result.summary)
-                    if !result.failed.isEmpty {
-                        self.lastError = result.failed.map { "\($0.name): \($0.error)" }.joined(separator: "\n")
-                    }
-                    self.refresh()
+                let summary = result.summary
+                let detail = result.failed.isEmpty ? nil : result.failed.map { "\($0.name): \($0.error)" }.joined(separator: "\n")
+                Task { @MainActor [weak self] in
+                    self?.finishBusyOperation(message: summary, error: detail)
                 }
             }
         } catch {
@@ -687,6 +673,19 @@ final class AppState: ObservableObject {
     }
 
     // MARK: - 更新检测
+
+    /// 应用更新检测结果（MainActor 上调用；提取为方法以避免并发闭包捕获可变状态）
+    private func applyUpdateResults(_ results: [String: UpdateChecker.UpdateInfo]) {
+        for (skillID, info) in results {
+            if let idx = skills.firstIndex(where: { $0.id == skillID }) {
+                skills[idx].hasUpdate = info.hasUpdate
+            }
+        }
+        updateChecking = false
+        updateResults = results
+        let updatable = results.values.filter(\.hasUpdate).count
+        notice("检查完成，\(updatable) 个 skill 有更新")
+    }
 
     func checkForUpdates() {
         guard !updateChecking else { return }
@@ -707,18 +706,8 @@ final class AppState: ObservableObject {
                     self?.updateProgressTotal = total
                 }
             }
-            // 一次性跳回 MainActor 更新状态，避免「先读索引、再写入」两次跳跃之间的竞态
-            await MainActor.run {
-                guard let self else { return }
-                for (skillID, info) in results {
-                    if let idx = self.skills.firstIndex(where: { $0.id == skillID }) {
-                        self.skills[idx].hasUpdate = info.hasUpdate
-                    }
-                }
-                self.updateChecking = false
-                self.updateResults = results
-                let updatable = results.values.filter(\.hasUpdate).count
-                self.notice("检查完成，\(updatable) 个 skill 有更新")
+            Task { @MainActor [weak self] in
+                self?.applyUpdateResults(results)
             }
         }
     }
@@ -778,14 +767,14 @@ final class AppState: ObservableObject {
                     }
                 }
                 AIAnalysis.writeResults(results, to: targets)
-                await MainActor.run {
-                    guard let self else { return }
-                    self.aiAnalyzing = false
-                    self.notice("分析完成，\(results.count) 个 skill 已标注")
-                    self.refresh()
+                let count = results.count
+                Task { @MainActor [weak self] in
+                    self?.aiAnalyzing = false
+                    self?.notice("分析完成，\(count) 个 skill 已标注")
+                    self?.refresh()
                 }
             } catch {
-                await MainActor.run {
+                Task { @MainActor [weak self] in
                     self?.aiAnalyzing = false
                     self?.aiError = error.localizedDescription
                 }
@@ -796,6 +785,14 @@ final class AppState: ObservableObject {
     /// 供视图层使用的公开通知入口（带 3 秒自动消失）
     func postNotice(_ text: String) {
         notice(text)
+    }
+
+    /// 后台批量操作的统一收尾：关繁忙态、发通知、可选展示错误明细、刷新
+    private func finishBusyOperation(message: String, error: String?) {
+        isBusy = false
+        notice(message)
+        if let error { lastError = error }
+        refresh()
     }
 
     private func notice(_ text: String) {

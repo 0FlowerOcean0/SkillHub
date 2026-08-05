@@ -142,7 +142,7 @@ struct SkillManager {
         // 1. 同名不同路径
         var byName: [String: [Skill]] = [:]
         for skill in skills { byName[skill.name.lowercased(), default: []].append(skill) }
-        for (name, group) in byName where group.count > 1 {
+        for (_, group) in byName where group.count > 1 {
             groups.append(RedundancyGroup(
                 reason: "同名 skill",
                 skills: group,
@@ -151,7 +151,7 @@ struct SkillManager {
         }
 
         // 2. 功能相似（基于标签重叠）
-        var tagged = skills.filter { !$0.tags.isEmpty }
+        let tagged = skills.filter { !$0.tags.isEmpty }
         var used = Set<String>()
         for i in 0..<tagged.count {
             guard !used.contains(tagged[i].id) else { continue }
@@ -458,15 +458,10 @@ struct SkillManager {
                 score = 1.0
                 reasons.append("精确匹配")
             }
-            // 名称包含
+            // 名称包含（前缀已被包含覆盖，不设单独分支）
             else if skill.name.lowercased().contains(q) {
                 score = 0.9
                 reasons.append("名称匹配")
-            }
-            // 名称前缀
-            else if skill.name.lowercased().hasPrefix(q) {
-                score = 0.85
-                reasons.append("名称前缀")
             }
             // 描述包含
             else if skill.descriptionText.lowercased().contains(q) {

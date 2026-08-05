@@ -713,12 +713,14 @@ struct ManagerSheet: View {
                             .foregroundStyle(.secondary)
                             .frame(width: 50, alignment: .trailing)
                         Button("同步缺失") {
-                            let missingSkills = coverage.missing.prefix(10)
-                            for skill in missingSkills {
-                                state.syncToAll(skill: skill)
+                            // 批量启用到该平台，只刷新一次（原来逐个 syncToAll 会触发 N 次全量扫描，
+                            // 且静默只处理前 10 个）
+                            if let target = state.targets.first(where: { $0.id == coverage.agentId }) {
+                                state.batchEnable(skills: coverage.missing, to: target)
                             }
                         }
                         .controlSize(.small)
+                        .disabled(coverage.missing.isEmpty)
                     }
                 }
             }
@@ -868,8 +870,9 @@ struct ManagerSheet: View {
                             }
 
                             Button {
-                                for skill in coverage.missing {
-                                    state.syncToAll(skill: skill)
+                                // 批量启用到该平台，只刷新一次
+                                if let target = state.targets.first(where: { $0.id == coverage.agentId }) {
+                                    state.batchEnable(skills: coverage.missing, to: target)
                                 }
                             } label: {
                                 Label("一键同步全部缺失", systemImage: "arrow.triangle.2.circlepath")

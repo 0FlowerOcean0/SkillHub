@@ -437,7 +437,8 @@ struct SkillListItems: View {
     @EnvironmentObject var state: AppState
 
     var body: some View {
-        List(skills) { skill in
+        // 绑定 selection：点击的行有选中高亮，清楚标识当前详情页展示的是哪个 skill
+        List(skills, selection: $state.selectedSkillID) { skill in
             SkillRow(skill: skill)
                 .tag(skill.id)
                 .onTapGesture {

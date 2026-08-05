@@ -71,7 +71,7 @@ enum UpdateChecker {
         guard let branch = skill.gitBranch else {
             throw UpdateError.noBranch
         }
-        guard let result = runGit(["pull", "origin", branch], in: gitRoot) else {
+        guard runGit(["pull", "origin", branch], in: gitRoot) != nil else {
             throw UpdateError.pullFailed
         }
     }
