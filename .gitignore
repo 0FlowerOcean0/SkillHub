@@ -1,0 +1,28 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+*.swiftmodule
+*.dSYM.zip
+*.dSYM
+
+# Xcode
+DerivedData/
+xcuserdata/
+*.xccheckout
+*.xcscmblueprint
+*.moved-aside
+*.pbxuser
+*.perspectivev3
+*.xcuserstate
+*.xcbkptlist
+
+# App bundle 打包产物（由 Scripts/make_app.sh 生成）
+*.app
+app/
