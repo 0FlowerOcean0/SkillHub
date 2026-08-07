@@ -123,7 +123,8 @@ enum Doctor {
                 }
             }
             // 9. 安全扫描：高危/中危转为 issue（低危只体现在报告分数里，避免噪音）
-            let report = SecurityScanner.scan(skill: skill)
+            // 优先用缓存的报告（随指纹失效），没有才现场扫——现场扫很贵，只应发生在补扫阶段
+            let report = skill.securityReport ?? SecurityScanner.scan(skill: skill)
             let risky = report.findings.filter { $0.severity != .low }
             if !risky.isEmpty {
                 let preview = risky.prefix(3)

@@ -19,6 +19,9 @@ struct CachedSkillEntry: Codable {
     var gitRemote: String?
     var gitBranch: String?
     var gitLastCommit: String?
+    /// 安全扫描结果（可选：旧版缓存没有此字段，解码为 nil 后由后台补扫）
+    var securityFindings: [SecurityFinding]?
+    var securityScore: Int?
 
     init(skill: Skill, fingerprint: String) {
         self.fingerprint = fingerprint
@@ -35,6 +38,13 @@ struct CachedSkillEntry: Codable {
         self.gitRemote = skill.gitRemote
         self.gitBranch = skill.gitBranch
         self.gitLastCommit = skill.gitLastCommit
+        self.securityFindings = skill.securityReport?.findings
+        self.securityScore = skill.securityReport?.score
+    }
+
+    func makeReport() -> SecurityReport? {
+        guard let findings = securityFindings, let score = securityScore else { return nil }
+        return SecurityReport(findings: findings, score: score)
     }
 
     /// 从缓存还原 Skill（presence 由每次扫描的目录列举重新填充，不进缓存）
@@ -55,6 +65,7 @@ struct CachedSkillEntry: Codable {
         skill.gitRemote = gitRemote
         skill.gitBranch = gitBranch
         skill.gitLastCommit = gitLastCommit
+        skill.securityReport = makeReport()
         return skill
     }
 }

@@ -1,9 +1,9 @@
 import Foundation
 
 /// 安全扫描发现：一条规则在一个文件某一行上的命中
-struct SecurityFinding: Hashable {
+struct SecurityFinding: Hashable, Codable {
 
-    enum Severity: String, Comparable, CaseIterable {
+    enum Severity: String, Comparable, CaseIterable, Codable {
         case high, medium, low
 
         private var rank: Int {

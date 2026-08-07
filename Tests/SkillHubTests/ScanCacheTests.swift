@@ -112,4 +112,60 @@ final class ScanCacheTests: XCTestCase {
         stale.save(to: url)
         XCTAssertNil(ScanCache.load(from: url))
     }
+
+    func testSecurityReportRoundTripsThroughCache() throws {
+        let box = try TempSandbox()
+        let dir = try box.makeSkillDir("store/skills/alpha", frontmatter: "---\nname: alpha\n---\n")
+        let store = box.makeTarget("agents", "store/skills")
+
+        // 全量扫描后手动塞一个安全报告（模拟后台补扫完成）
+        var result = SkillScanner.execute(plan: SkillScanner.plan(targets: [store]), cache: nil)
+        let report = SecurityScanner.scan(skill: result.outcome.skills[0])
+        result.outcome.skills[0].securityReport = report
+        let fp = plan_fingerprint(for: dir)
+        let cache = ScanCache(
+            version: ScanCache.formatVersion,
+            entries: [dir.path: CachedSkillEntry(skill: result.outcome.skills[0], fingerprint: fp)]
+        )
+
+        // 复用时安全报告应随缓存还原，Doctor 不必再现场扫
+        let reused = SkillScanner.execute(plan: SkillScanner.plan(targets: [store]), cache: cache)
+        XCTAssertTrue(reused.fullyFromCache)
+        XCTAssertNotNil(reused.outcome.skills[0].securityReport)
+        XCTAssertEqual(reused.outcome.skills[0].securityReport?.score, report.score)
+    }
+
+    func testOldCacheWithoutSecurityFieldsStillLoads() throws {
+        // 旧版缓存没有 securityFindings / securityScore 字段，应解码为 nil 而不是加载失败
+        let json = """
+        {
+          "version": 1,
+          "entries": {
+            "/tmp/x": {
+              "fingerprint": "1|2",
+              "name": "old",
+              "descriptionText": "",
+              "fileCount": 1,
+              "sizeBytes": 10,
+              "hasFrontmatter": true,
+              "tags": [],
+              "summary": "",
+              "author": "",
+              "supportDirs": []
+            }
+          }
+        }
+        """
+        let cache = try JSONDecoder().decode(ScanCache.self, from: Data(json.utf8))
+        let entry = cache.entries["/tmp/x"]
+        XCTAssertNotNil(entry)
+        XCTAssertNil(entry?.securityFindings)
+        XCTAssertNil(entry?.securityScore)
+        XCTAssertNil(entry?.makeReport(), "缺安全字段时 makeReport 应为 nil，触发后台补扫")
+    }
+
+    /// 与 SkillScanner.fingerprint 相同的口径，避免测试里再拼一遍
+    private func plan_fingerprint(for dir: URL) -> String {
+        SkillScanner.fingerprint(for: dir)
+    }
 }

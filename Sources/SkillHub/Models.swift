@@ -84,6 +84,8 @@ struct Skill: Identifiable, Hashable {
     var gitBranch: String? = nil
     var gitLastCommit: String? = nil
     var hasUpdate: Bool = false
+    /// 安全扫描报告（运行时缓存：来自 ScanCache 或后台扫描，避免每次刷新重扫全部文件）
+    var securityReport: SecurityReport? = nil
     /// SKILL.md 全文（懒加载后缓存）
     var skillMarkdownPath: URL { canonicalPath.appendingPathComponent("SKILL.md") }
 

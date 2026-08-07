@@ -121,7 +121,7 @@ SkillHub/
 │   ├── SecurityScanner.swift      # 安全扫描：表驱动规则、评分与等级
 │   ├── ProjectWorkspace.swift     # 项目工作区：注册、扫描项目级 skills、双向复制同步
 │   ├── SkillScanner.swift         # 扫描各平台目录，解析软链、按本体去重（plan 列举 / execute 按需解析）
-│   ├── ScanCache.swift            # 逐 skill 指纹缓存：启动秒开，只有变化的 skill 才重扫
+│   ├── ScanCache.swift            # 逐 skill 指纹缓存（含安全报告）：启动秒开，只有变化的 skill 才重扫
 │   ├── SkillOps.swift             # 启用（软链 / 副本）/ 禁用 / 删除 / 安装（含 @版本）/ 收编 / 体检修复
 │   ├── SkillManager.swift         # 来源分组、覆盖率、使用频率、冗余、清理、搜索、分类、收藏、作者分组
 │   ├── Doctor.swift               # 体检规则与问题生成（含安全扫描项）

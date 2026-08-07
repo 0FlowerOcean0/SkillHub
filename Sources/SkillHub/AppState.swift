@@ -256,6 +256,11 @@ final class AppState: ObservableObject {
     /// 刷新 skills 列表。
     /// - force: false 时走逐 skill 指纹缓存（启动秒开，只有变化的 skill 才重扫）；
     ///   true 时绕过缓存全量重扫（手动「刷新 / 重新体检」按钮）。
+    ///
+    /// 两阶段设计：
+    /// 1. plan + execute（缓存命中时毫秒级）后**立刻**把 skills 应用到界面；
+    /// 2. 安全扫描报告很贵（遍历每个 skill 的全部文本文件），只补扫没有缓存报告的 skill，
+    ///    扫完再跑体检并应用 issues。界面不会被体检阻塞。
     func refresh(force: Bool = false) {
         sanitizeCustomAgentTargets()
         autoDetectPlatforms()
@@ -270,18 +275,38 @@ final class AppState: ObservableObject {
                     self?.isBusy = true
                 }
             }
-            let result = SkillScanner.execute(plan: plan, cache: cached)
+            var result = SkillScanner.execute(plan: plan, cache: cached)
             result.cache.save()
-            let outcome = result.outcome
-            let issues = Doctor.run(outcome: outcome, targets: targets)
             let lockFile = SkillLockFile.load(from: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".agents/.skill-lock.json"))
+
+            // 第一阶段：立刻应用 skills，界面秒出数据
+            let outcomeForUI = result.outcome
             Task { @MainActor [weak self] in
-                self?.skills = outcome.skills
-                self?.brokenLinks = outcome.brokenLinks
-                self?.issues = issues
+                self?.skills = outcomeForUI.skills
+                self?.brokenLinks = outcomeForUI.brokenLinks
                 self?.lockFile = lockFile
                 self?.refreshManager()
                 self?.isBusy = false
+            }
+
+            // 第二阶段：补扫缺失的安全报告（结果回写缓存），然后跑体检
+            var entries = result.cache.entries
+            var scannedAny = false
+            for i in result.outcome.skills.indices where result.outcome.skills[i].securityReport == nil {
+                let report = SecurityScanner.scan(skill: result.outcome.skills[i])
+                result.outcome.skills[i].securityReport = report
+                let path = result.outcome.skills[i].canonicalPath.path
+                entries[path]?.securityFindings = report.findings
+                entries[path]?.securityScore = report.score
+                scannedAny = true
+            }
+            if scannedAny {
+                ScanCache(version: ScanCache.formatVersion, entries: entries).save()
+            }
+            let issues = Doctor.run(outcome: result.outcome, targets: targets)
+            Task { @MainActor [weak self] in
+                self?.issues = issues
+                self?.refreshManager()
             }
         }
     }
