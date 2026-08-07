@@ -140,6 +140,8 @@ struct NativeSidebar: View {
     @State private var renamingPreset: SkillPreset? = nil
     @State private var renamePresetName = ""
     @State private var deletingPreset: SkillPreset? = nil
+    /// 侧栏是否隐藏 0 个 skill 的空平台（默认隐藏，避免一堆没装 skills 的平台刷屏）
+    @AppStorage("hideEmptyPlatforms") private var hideEmptyPlatforms = true
 
     var body: some View {
         List(selection: sidebarSelection) {
@@ -253,7 +255,13 @@ struct NativeSidebar: View {
             }
 
             DisclosureGroup("Agent 平台", isExpanded: $isAgentExpanded) {
-                ForEach(state.targets.filter(\.exists)) { target in
+                // 本体库始终显示；其余平台在开启「隐藏空平台」时只显示有 skills 的
+                let visibleTargets = state.targets.filter(\.exists).filter { target in
+                    !hideEmptyPlatforms
+                        || target.id == AgentTarget.canonicalID
+                        || state.skills.contains { $0.presence[target.id] != nil }
+                }
+                ForEach(visibleTargets) { target in
                     let count = state.skills.filter { $0.presence[target.id] != nil }.count
                     Label {
                         HStack {
@@ -275,6 +283,16 @@ struct NativeSidebar: View {
                 } label: {
                     Label("添加平台", systemImage: "plus.circle")
                         .foregroundStyle(.secondary)
+                }
+
+                Button {
+                    hideEmptyPlatforms.toggle()
+                } label: {
+                    Label(
+                        hideEmptyPlatforms ? "显示空平台" : "隐藏空平台",
+                        systemImage: hideEmptyPlatforms ? "eye" : "eye.slash"
+                    )
+                    .foregroundStyle(.secondary)
                 }
             }
         }
