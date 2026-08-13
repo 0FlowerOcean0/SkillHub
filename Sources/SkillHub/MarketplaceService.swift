@@ -47,6 +47,9 @@ struct MarketplaceSkill: Identifiable, Hashable {
     /// 安装量（未知则为 nil）
     let installs: Int?
 
+    /// 仓库内的 skill 标识。市场 id 固定为 owner/repo/skillId。
+    var skillID: String { id.split(separator: "/").last.map(String.init) ?? name }
+
     /// skills.sh 详情页
     var skillPageURL: URL { URL(string: "https://skills.sh/\(id)")! }
     /// GitHub 仓库页
@@ -249,7 +252,8 @@ struct MarketplaceService {
 
     private func get(_ url: URL) async throws -> Data {
         var req = URLRequest(url: url, timeoutInterval: timeout)
-        req.setValue("SkillHub/1.0 (macOS)", forHTTPHeaderField: "User-Agent")
+        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+        req.setValue("SkillHub/\(appVersion) (macOS)", forHTTPHeaderField: "User-Agent")
         let data: Data
         let resp: URLResponse
         do {

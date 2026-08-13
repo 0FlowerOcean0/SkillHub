@@ -5,31 +5,37 @@
 # 用法：
 #   Scripts/make_app.sh                 # 先 swift build -c release，再打包
 #   SKIP_BUILD=1 Scripts/make_app.sh    # 跳过构建，直接用已有 release 产物打包
+#   UNIVERSAL=1 Scripts/make_app.sh     # 构建 arm64 + x86_64 通用版本
+#   SIGN_IDENTITY="Developer ID Application: ..." Scripts/make_app.sh
 #
 # 输出：.build/app/SkillHub.app（.build/ 已被 .gitignore 忽略）
 #
 set -euo pipefail
 
-# ---- 配置 --------------------------------------------------------------------
-APP_NAME="SkillHub"
-BUNDLE_ID="com.skillhub.app"
-VERSION="${VERSION:-0.1.0}"
-BUILD_NUMBER="${BUILD_NUMBER:-1}"
-MIN_SYSTEM_VERSION="14.0"
-
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+
+# ---- 配置 --------------------------------------------------------------------
+APP_NAME="SkillHub"
+BUNDLE_ID="${BUNDLE_ID:-io.github.0flowerocean0.SkillHub}"
+VERSION="${VERSION:-$(tr -d '[:space:]' < VERSION)}"
+BUILD_NUMBER="${BUILD_NUMBER:-1}"
+MIN_SYSTEM_VERSION="14.0"
 
 OUTPUT_DIR="$ROOT_DIR/.build/app"
 APP_DIR="$OUTPUT_DIR/$APP_NAME.app"
 
 # ---- 1. 构建 release 产物 -----------------------------------------------------
+SWIFT_BUILD_ARGS=(-c release)
+if [[ "${UNIVERSAL:-0}" == "1" ]]; then
+    SWIFT_BUILD_ARGS+=(--arch arm64 --arch x86_64)
+fi
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
-    echo "==> swift build -c release ..."
-    swift build -c release
+    echo "==> swift build ${SWIFT_BUILD_ARGS[*]} ..."
+    swift build "${SWIFT_BUILD_ARGS[@]}"
 fi
 
-BIN_PATH="$(swift build -c release --show-bin-path)"
+BIN_PATH="$(swift build "${SWIFT_BUILD_ARGS[@]}" --show-bin-path)"
 EXECUTABLE="$BIN_PATH/$APP_NAME"
 RESOURCE_BUNDLE="$BIN_PATH/${APP_NAME}_${APP_NAME}.bundle"
 
@@ -113,7 +119,23 @@ if [[ -n "$ICON_FILE" ]]; then
         "$APP_DIR/Contents/Info.plist"
 fi
 
-# ---- 5. 完成 ------------------------------------------------------------------
+# ---- 5. 签名 -------------------------------------------------------------------
+# SwiftPM 产物复制进 .app 并加入资源后，原可执行文件签名不再覆盖整个 bundle。
+# 未提供 SIGN_IDENTITY 时使用 ad-hoc 签名，仅用于本机测试，不能代替 Developer ID 分发签名。
+if command -v codesign >/dev/null 2>&1; then
+    if [[ -n "${SIGN_IDENTITY:-}" ]]; then
+        codesign --force --options runtime --timestamp \
+            --sign "$SIGN_IDENTITY" "$APP_DIR"
+        echo "==> 已使用 Developer ID 签名"
+    else
+        codesign --force --deep --sign - "$APP_DIR"
+        echo "==> 已完成本地 ad-hoc 签名（仅供本机测试）"
+    fi
+else
+    echo "警告：未找到 codesign，生成的 .app 未签名" >&2
+fi
+
+# ---- 6. 完成 ------------------------------------------------------------------
 echo ""
 echo "✅ 打包完成：$APP_DIR"
 echo "   版本：$VERSION ($BUILD_NUMBER)，最低系统：macOS $MIN_SYSTEM_VERSION"

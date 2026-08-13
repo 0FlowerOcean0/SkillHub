@@ -23,7 +23,7 @@ struct NewContentView: View {
         }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
-                if state.isBusy || state.aiAnalyzing || state.updateChecking {
+                if state.isBusy || state.updateChecking {
                     ProgressView()
                         .controlSize(.small)
                 }
@@ -54,9 +54,6 @@ struct NewContentView: View {
                         Label("更新", systemImage: "arrow.triangle.2.circlepath")
                     }
                     .disabled(state.updateChecking)
-                    Button { state.showAIAnalysis = true } label: {
-                        Label("AI 分析", systemImage: "brain")
-                    }
                     Button { state.showManager = true } label: {
                         Label("管家", systemImage: "wand.and.stars")
                     }
@@ -71,9 +68,6 @@ struct NewContentView: View {
         .sheet(isPresented: $state.showManager) {
             ManagerSheet()
         }
-        .sheet(isPresented: $state.showAIAnalysis) {
-            AIAnalysisSheet()
-        }
         .sheet(isPresented: $state.showDoctor) {
             DoctorSheet()
         }
@@ -81,9 +75,10 @@ struct NewContentView: View {
             InstallSheet()
         }
         .sheet(isPresented: $state.showMarketplace) {
-            MarketplaceView(onInstall: { source in
-                await state.installFromMarketplace(source: source)
-            })
+            MarketplaceView(
+                onPrepare: { skill in try await state.prepareMarketplaceInstall(skill: skill) },
+                onCommit: { prepared in await state.commitMarketplaceInstall(prepared) }
+            )
             .frame(minWidth: 680, minHeight: 520)
         }
         // 统一的操作反馈横幅：通知自动消失，错误需手动关闭
@@ -411,7 +406,6 @@ struct NativeSidebar: View {
         switch id {
         case "agents": return "shippingbox"
         case "claude": return "brain"
-        case "cursor": return "cursorarrow"
         case "codex": return "chevron.left.forwardslash.chevron.right"
         default: return "gearshape"
         }
@@ -459,13 +453,14 @@ struct SkillListItems: View {
         List(skills, selection: $state.selectedSkillID) { skill in
             SkillRow(skill: skill)
                 .tag(skill.id)
-                .onTapGesture {
-                    state.selectedSkillForDetail = skill
-                    state.selectedSkillID = skill.id
-                }
         }
         .listStyle(.inset)
         .alternatingRowBackgrounds(.enabled)
+        .onChange(of: state.selectedSkillID) { _, id in
+            if let id, let skill = skills.first(where: { $0.id == id }) {
+                state.selectedSkillForDetail = skill
+            }
+        }
     }
 }
 
@@ -512,6 +507,13 @@ struct SkillRow: View {
             HStack(spacing: 4) {
                 ForEach(skill.tags.prefix(3), id: \.self) { tag in
                     Text(tag)
+                        .font(.caption2)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(.quaternary, in: Capsule())
+                }
+                if !skill.hasSkillMarkdown {
+                    Text("未规范")
                         .font(.caption2)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
@@ -933,7 +935,6 @@ struct SkillDetailPanel: View {
             VStack(alignment: .leading, spacing: 20) {
                 headerSection
                 agentMatrixSection
-                if skill.hasAnalysis { aiAnalysisSection }
                 if skill.gitRemote != nil { gitSection }
                 actionsSection
                 markdownSection
@@ -987,11 +988,11 @@ struct SkillDetailPanel: View {
                     if skill.hasUpdate {
                         badge(icon: "arrow.triangle.down.circle.fill", text: "可更新", color: .green)
                     }
-                    if skill.hasAnalysis {
-                        badge(icon: "brain.fill", text: "已分析", color: .purple)
-                    }
                     if !skill.hasFrontmatter {
                         badge(icon: "exclamationmark.triangle.fill", text: "缺 frontmatter", color: .orange)
+                    }
+                    if !skill.hasSkillMarkdown {
+                        badge(icon: "questionmark.folder.fill", text: "未规范", color: .gray)
                     }
                 }
             }
@@ -1110,40 +1111,8 @@ struct SkillDetailPanel: View {
         switch id {
         case "agents": return "shippingbox"
         case "claude": return "brain"
-        case "cursor": return "cursorarrow"
         case "codex": return "chevron.left.forwardslash.chevron.right"
         default: return "gearshape"
-        }
-    }
-
-    // MARK: - AI Analysis
-
-    private var aiAnalysisSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            sectionHeader("AI 分析", icon: "brain")
-            VStack(alignment: .leading, spacing: 8) {
-                if !skill.summary.isEmpty {
-                    Text(skill.summary)
-                        .font(.body)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if !skill.tags.isEmpty {
-                    HStack(spacing: 6) {
-                        ForEach(skill.tags, id: \.self) { tag in
-                            Text(tag)
-                                .font(.system(size: 12, weight: .medium))
-                                .padding(.horizontal, 10).padding(.vertical, 4)
-                                .background(Color.purple.opacity(0.1))
-                                .foregroundStyle(.purple)
-                                .clipShape(Capsule())
-                        }
-                    }
-                }
-            }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.purple.opacity(0.04))
-            .clipShape(RoundedRectangle(cornerRadius: 10))
         }
     }
 
@@ -1399,6 +1368,10 @@ struct DirectoryTreeView: View {
     let path: URL
     @State private var children: [FileNode] = []
     @State private var isExpanded = true
+    @State private var selectedFileURL: URL?
+    @State private var selectedFileName: String = ""
+    @State private var showFilePopover = false
+    @State private var fileContent: String = ""
 
     struct FileNode: Identifiable {
         let id = UUID()
@@ -1412,15 +1385,67 @@ struct DirectoryTreeView: View {
         VStack(alignment: .leading, spacing: 2) {
             DisclosureGroup(isExpanded: $isExpanded) {
                 ForEach(children) { node in
-                    FileNodeRow(node: node, depth: 1)
+                    FileNodeRow(node: node, depth: 1, onFileSelected: { url, name in
+                        selectedFileURL = url
+                        selectedFileName = name
+                        loadFileContent(from: url)
+                        showFilePopover = true
+                    })
                 }
             } label: {
                 Label(path.lastPathComponent, systemImage: "folder.fill")
                     .font(.subheadline.monospaced())
             }
         }
+        .popover(isPresented: $showFilePopover, attachmentAnchor: .rect(.bounds), arrowEdge: .trailing) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text(selectedFileName)
+                        .font(.headline)
+                    Spacer()
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(fileContent, forType: .string)
+                    } label: {
+                        Label("复制", systemImage: "doc.on.doc")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    Button {
+                        showFilePopover = false
+                    } label: {
+                        Label("关闭", systemImage: "xmark.circle")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+                Divider()
+                ScrollView([.horizontal, .vertical]) {
+                    Text(fileContent)
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .frame(width: 600, height: 500)
+            .padding()
+        }
         .task(id: path) {
             children = buildTree(at: path, maxDepth: 3)
+        }
+    }
+
+    private func loadFileContent(from url: URL) {
+        guard let data = try? Data(contentsOf: url),
+              let content = String(data: data, encoding: .utf8) else {
+            fileContent = "(无法读取: \(url.lastPathComponent))"
+            return
+        }
+        let lines = content.components(separatedBy: .newlines)
+        if lines.count > 200 {
+            fileContent = lines.prefix(200).joined(separator: "\n") + "\n\n... (共 \(lines.count) 行)"
+        } else {
+            fileContent = content
         }
     }
 
@@ -1448,16 +1473,15 @@ struct DirectoryTreeView: View {
 struct FileNodeRow: View {
     let node: DirectoryTreeView.FileNode
     let depth: Int
+    let onFileSelected: (URL, String) -> Void
     @State private var isExpanded = false
-    @State private var showFileContent = false
-    @State private var fileContent: String = ""
 
     var body: some View {
         if node.isDirectory {
             DisclosureGroup(isExpanded: $isExpanded) {
                 if let children = node.children {
                     ForEach(children) { child in
-                        FileNodeRow(node: child, depth: depth + 1)
+                        FileNodeRow(node: child, depth: depth + 1, onFileSelected: onFileSelected)
                     }
                 }
             } label: {
@@ -1466,53 +1490,12 @@ struct FileNodeRow: View {
             }
         } else {
             Button {
-                loadFileContent()
-                showFileContent = true
+                onFileSelected(node.url, node.name)
             } label: {
                 Label(node.name, systemImage: fileIcon(for: node.name))
                     .font(.caption.monospaced())
             }
             .buttonStyle(.plain)
-            .popover(isPresented: $showFileContent) {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text(node.name)
-                            .font(.headline)
-                        Spacer()
-                        Button {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(fileContent, forType: .string)
-                        } label: {
-                            Label("复制", systemImage: "doc.on.doc")
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                    }
-                    Divider()
-                    ScrollView([.horizontal, .vertical]) {
-                        Text(fileContent)
-                            .font(.caption.monospaced())
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-                .frame(width: 500, height: 400)
-                .padding()
-            }
-        }
-    }
-
-    private func loadFileContent() {
-        guard let data = try? Data(contentsOf: node.url),
-              let content = String(data: data, encoding: .utf8) else {
-            fileContent = "(无法读取)"
-            return
-        }
-        let lines = content.components(separatedBy: .newlines)
-        if lines.count > 200 {
-            fileContent = lines.prefix(200).joined(separator: "\n") + "\n\n... (共 \(lines.count) 行)"
-        } else {
-            fileContent = content
         }
     }
 
@@ -1742,10 +1725,7 @@ struct AddAgentSheet: View {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let knownPlatforms: [(name: String, path: String)] = [
             ("Claude Code", ".claude"),
-            ("Cursor", ".cursor"),
             ("Codex", ".codex"),
-            ("Qoder", ".qoder"),
-            ("iFlow", ".iflow"),
             ("Aider", ".aider"),
             ("Continue", ".continue"),
             ("Cline", ".cline"),

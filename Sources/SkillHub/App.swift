@@ -3,7 +3,12 @@ import SwiftUI
 @main
 struct SkillHubApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    @StateObject private var state = AppState()
+    @StateObject private var state: AppState
+
+    init() {
+        AppPreferences.migrateLegacyBundleIfNeeded()
+        _state = StateObject(wrappedValue: AppState())
+    }
 
     var body: some Scene {
         WindowGroup("SkillHub") {
@@ -22,11 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
 
-        if let iconURL = Bundle.module.url(forResource: "AppIcon", withExtension: "appiconset", subdirectory: "Assets.xcassets"),
-           let data = try? Data(contentsOf: iconURL.appendingPathComponent("icon_512x512.png")),
-           let image = NSImage(data: data) {
-            NSApp.applicationIconImage = image
-        }
+        NSApp.applicationIconImage = NSImage(named: "AppIcon")
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }

@@ -76,13 +76,13 @@ final class ProjectWorkspaceTests: XCTestCase {
         _ = try box.makeSkillDir("proj/.claude/skills/alpha",
                                  frontmatter: "---\nname: alpha\ndescription: A skill\n---\n")
         _ = try box.makeSkillDir("proj/.agents/skills/beta")
-        _ = try box.makeSkillDir("proj/.qoder/skills/gamma")
+        _ = try box.makeSkillDir("proj/.codex/skills/gamma")
 
         let ws = ProjectWorkspace(path: box.root.appendingPathComponent("proj", isDirectory: true))
         let entries = try ProjectScanner.scan(workspace: ws)
 
         XCTAssertEqual(entries.count, 3)
-        XCTAssertEqual(Set(entries.map(\.source)), [".agents/skills", ".claude/skills", ".qoder/skills"])
+        XCTAssertEqual(Set(entries.map(\.source)), [".agents/skills", ".claude/skills", ".codex/skills"])
         let alpha = entries.first { $0.directoryName == "alpha" }
         XCTAssertEqual(alpha?.skillName, "alpha")
         XCTAssertEqual(alpha?.descriptionText, "A skill")

@@ -149,7 +149,7 @@ final class SkillManifestTests: XCTestCase {
         let box = try TempSandbox()
         let storeDir = box.root.appendingPathComponent("store", isDirectory: true)
         let claude = box.makeTarget("claude", "claude/skills")
-        let qoder = box.makeTarget("qoder", "qoder/skills")
+        _ = box.makeTarget("qoder", "qoder/skills")
 
         // 本地来源：一个可直接安装的 skill 目录（走 install 的本地路径分支，不触发 git）
         try box.makeSkillDir("vendor/newbie", frontmatter: "---\nname: newbie\ndescription: N\n---\n")

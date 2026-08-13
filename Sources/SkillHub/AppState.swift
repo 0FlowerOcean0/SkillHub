@@ -34,14 +34,6 @@ final class AppState: ObservableObject {
         Array(Set(skills.flatMap(\.tags))).sorted()
     }
 
-    // MARK: - AI 分析状态
-    @Published var aiAnalyzing = false
-    @Published var aiProgressDone = 0
-    @Published var aiProgressTotal = 0
-    @Published var aiCurrentSkillName = ""
-    @Published var aiError: String? = nil
-    @Published var showAIAnalysis = false
-
     // MARK: - 更新检测状态
     @Published var updateChecking = false
     @Published var updateProgressDone = 0
@@ -187,7 +179,7 @@ final class AppState: ObservableObject {
         skills.first { $0.id == selectedSkillID }
     }
 
-    var stats: (total: Int, orphan: Int, errors: Int, warnings: Int, totalSize: Int64, analyzed: Int, updatable: Int) {
+    var stats: (total: Int, orphan: Int, errors: Int, warnings: Int, totalSize: Int64, updatable: Int) {
         let orphan = skills.filter { s in
             s.presence.keys.filter { $0 != AgentTarget.canonicalID }.isEmpty
         }.count
@@ -197,7 +189,6 @@ final class AppState: ObservableObject {
             issues.filter { $0.severity == .error }.count,
             issues.filter { $0.severity == .warning }.count,
             skills.reduce(0) { $0 + $1.sizeBytes },
-            skills.filter(\.hasAnalysis).count,
             skills.filter(\.hasUpdate).count
         )
     }
@@ -210,7 +201,6 @@ final class AppState: ObservableObject {
         let knownPlatforms: [(name: String, folder: String)] = [
             ("Claude Code", ".claude"),
             ("Codex", ".codex"),
-            ("Cursor", ".cursor"),
             ("Cline", ".cline"),
             ("Windsurf", ".windsurf"),
         ]
@@ -723,9 +713,15 @@ final class AppState: ObservableObject {
     func install(source: String, enableIn: [AgentTarget], completion: @escaping (Bool) -> Void) {
         isBusy = true
         let store = storeDir
+        let lockURL = lockFileURL
         Task.detached { [weak self] in
             do {
-                let result = try SkillOps.installWithRef(source: source, storeDir: store, enableTargets: enableIn)
+                let result = try SkillOps.installWithRef(
+                    source: source,
+                    storeDir: store,
+                    enableTargets: enableIn,
+                    lockFileURL: lockURL
+                )
                 let names = result.installed.joined(separator: ", ")
                 // @tag 安装时把实际 checkout 的版本号带进通知
                 let versionNote = result.resolvedRef.map { "（版本 \($0)）" } ?? ""
@@ -749,13 +745,55 @@ final class AppState: ObservableObject {
 
     @Published var showMarketplace = false
 
-    /// 从技能市场安装：source 为 "owner/repo" 形式，装到本体库（不自动启用），完成后刷新
-    func installFromMarketplace(source: String) async -> Bool {
-        await withCheckedContinuation { continuation in
-            install(source: "https://github.com/\(source)", enableIn: []) { ok in
-                continuation.resume(returning: ok)
-            }
+    /// 冻结并检查任意安装来源，不修改本体库。
+    func prepareInstall(source: String, selectedSkillID: String? = nil, selectedSkillName: String? = nil) async throws -> PreparedSkillInstall {
+        try await Task.detached(priority: .userInitiated) {
+            try SkillOps.prepareInstall(
+                source: source,
+                selectedSkillID: selectedSkillID,
+                selectedSkillName: selectedSkillName
+            )
+        }.value
+    }
+
+    /// 提交已经确认的安装内容，统一负责来源记录、反馈和刷新。
+    func commitInstall(_ prepared: PreparedSkillInstall, enableIn: [AgentTarget]) async -> Bool {
+        isBusy = true
+        let store = storeDir
+        let lockURL = lockFileURL
+        do {
+            let result = try await Task.detached(priority: .userInitiated) {
+                try SkillOps.commitPreparedInstall(
+                    prepared,
+                    storeDir: store,
+                    enableTargets: enableIn,
+                    lockFileURL: lockURL
+                )
+            }.value
+            notice("已安装 \(result.installed.joined(separator: "、"))")
+            isBusy = false
+            refresh()
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            isBusy = false
+            return false
         }
+    }
+
+    /// 下载并检查市场里的单个 skill，不写入本体库。
+    func prepareMarketplaceInstall(skill: MarketplaceSkill) async throws -> PreparedSkillInstall {
+        let source = "https://github.com/\(skill.source)"
+        return try await prepareInstall(
+            source: source,
+            selectedSkillID: skill.skillID,
+            selectedSkillName: skill.name
+        )
+    }
+
+    /// 用户确认后提交市场安装。市场安装默认只进入本体库，启用平台留给详情页处理。
+    func commitMarketplaceInstall(_ prepared: PreparedSkillInstall) async -> Bool {
+        await commitInstall(prepared, enableIn: [])
     }
 
     // MARK: - 技能清单导出/导入
@@ -858,66 +896,6 @@ final class AppState: ObservableObject {
             refresh()
         } catch {
             lastError = error.localizedDescription
-        }
-    }
-
-    // MARK: - AI 分析
-
-    enum AnalysisMode {
-        case all
-        case unanalyzed
-        case single(Skill)
-    }
-
-    func runAIAnalysis(mode: AnalysisMode) {
-        guard !aiAnalyzing else { return }
-        guard AIAnalysis.findCLI() != nil else {
-            aiError = "未找到 claude CLI，请先安装"
-            return
-        }
-
-        let targets: [Skill]
-        switch mode {
-        case .all:
-            targets = skills
-        case .unanalyzed:
-            targets = skills.filter { !$0.hasAnalysis }
-        case .single(let skill):
-            targets = [skill]
-        }
-
-        guard !targets.isEmpty else {
-            notice("没有需要分析的 skill")
-            return
-        }
-
-        aiAnalyzing = true
-        aiError = nil
-        aiProgressDone = 0
-        aiProgressTotal = targets.count
-
-        Task.detached { [weak self] in
-            do {
-                let results = try await AIAnalysis.analyzeBatch(skills: targets) { done, total, skill in
-                    Task { @MainActor [weak self] in
-                        self?.aiProgressDone = done
-                        self?.aiProgressTotal = total
-                        self?.aiCurrentSkillName = skill.name
-                    }
-                }
-                AIAnalysis.writeResults(results, to: targets)
-                let count = results.count
-                Task { @MainActor [weak self] in
-                    self?.aiAnalyzing = false
-                    self?.notice("分析完成，\(count) 个 skill 已标注")
-                    self?.refresh()
-                }
-            } catch {
-                Task { @MainActor [weak self] in
-                    self?.aiAnalyzing = false
-                    self?.aiError = error.localizedDescription
-                }
-            }
         }
     }
 

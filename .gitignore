@@ -26,3 +26,6 @@ xcuserdata/
 # App bundle 打包产物（由 Scripts/make_app.sh 生成）
 *.app
 app/
+
+# Local editor settings
+.vscode/

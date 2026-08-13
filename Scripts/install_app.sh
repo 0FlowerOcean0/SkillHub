@@ -4,7 +4,7 @@
 #
 # 用法：
 #   Scripts/install_app.sh              # 完整构建 + 安装 + 重启
-#   VERSION=1.1.0 Scripts/install_app.sh
+#   VERSION=1.3.0 Scripts/install_app.sh
 #   NO_LAUNCH=1 Scripts/install_app.sh  # 安装后不启动
 #
 set -euo pipefail

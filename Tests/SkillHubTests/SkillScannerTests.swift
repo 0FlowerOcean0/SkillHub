@@ -80,14 +80,20 @@ final class SkillScannerTests: XCTestCase {
         XCTAssertEqual(outcome.brokenLinks[0].url.lastPathComponent, "dead")
     }
 
-    func testScanIgnoresDirsWithoutSkillMarkdown() throws {
+    func testScanIncludesDirsWithoutSkillMarkdown() throws {
         let box = try TempSandbox()
         let store = box.makeTarget("agents", "store/skills")
         try box.fm.createDirectory(at: store.dir.appendingPathComponent("not-a-skill"), withIntermediateDirectories: true)
         _ = try box.makeSkillDir("store/skills/real-skill")
 
         let outcome = SkillScanner.scan(targets: [store])
-        XCTAssertEqual(outcome.skills.map(\.name), ["real-skill"])
+        XCTAssertEqual(outcome.skills.count, 2)
+        let names = Set(outcome.skills.map(\.name))
+        XCTAssertTrue(names.contains("real-skill"))
+        XCTAssertTrue(names.contains("not-a-skill"))
+        // 没有 SKILL.md 的目录标记为未规范
+        let unreg = outcome.skills.first { $0.name == "not-a-skill" }
+        XCTAssertEqual(unreg?.hasSkillMarkdown, false)
     }
 
     func testScanFallsBackToDirectoryNameAndExtractsAuthor() throws {

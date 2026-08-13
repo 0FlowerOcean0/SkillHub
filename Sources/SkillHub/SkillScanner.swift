@@ -9,8 +9,8 @@ struct ScanOutcome {
 
 /// 轻量列举结果：只做目录列举和 mtime 比对，不读 SKILL.md、不跑 git。
 struct ScanPlan {
-    /// canonicalPath -> (本体 URL, agentID -> 存在形式)
-    var skills: [String: (url: URL, presence: [String: PresenceKind])] = [:]
+    /// canonicalPath -> (本体 URL, agentID -> 存在形式, hasSkillMarkdown)
+    var skills: [String: (url: URL, presence: [String: PresenceKind], hasSkillMarkdown: Bool)] = [:]
     var brokenLinks: [(agentID: String, url: URL, destination: String)] = []
     /// canonicalPath -> 指纹
     var fingerprints: [String: String] = [:]
@@ -65,13 +65,16 @@ enum SkillScanner {
                     continue
                 }
                 guard destExists && isDir.boolValue else { continue }
-                // 只认包含 SKILL.md 的目录为 skill
-                guard fm.fileExists(atPath: resolved.appendingPathComponent("SKILL.md").path) else { continue }
+                // 目录无 SKILL.md 也纳入，标记为未规范
+                let hasSKILL = fm.fileExists(atPath: resolved.appendingPathComponent("SKILL.md").path)
 
                 let key = resolved.path
                 if plan.skills[key] == nil {
-                    plan.skills[key] = (resolved, [:])
-                    plan.fingerprints[key] = fingerprint(for: resolved)
+                    plan.skills[key] = (resolved, [:], hasSKILL)
+                    plan.fingerprints[key] = fingerprint(for: resolved, hasSkillMarkdown: hasSKILL)
+                } else if hasSKILL {
+                    // 如果任何 agent 有 SKILL.md，整个 skill 视为有
+                    plan.skills[key]?.hasSkillMarkdown = true
                 }
                 plan.skills[key]?.presence[target.id] = isLink ? .symlink : .real
             }
@@ -98,6 +101,7 @@ enum SkillScanner {
                 newEntries[path] = CachedSkillEntry(skill: skill, fingerprint: fp)
             }
             skill.presence = info.presence
+            skill.hasSkillMarkdown = info.hasSkillMarkdown
             outcome.skills.append(skill)
         }
 
@@ -113,9 +117,9 @@ enum SkillScanner {
 
     /// skill 指纹：SKILL.md 修改时间 + skill 目录修改时间。
     /// 增删 skill 内文件、改 SKILL.md 都会让指纹变化；改子目录内容不会（可接受，见 ScanCache 注释）。
-    static func fingerprint(for dir: URL) -> String {
+    static func fingerprint(for dir: URL, hasSkillMarkdown: Bool = true) -> String {
         let md = dir.appendingPathComponent("SKILL.md")
-        let mdDate = (try? md.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        let mdDate: Date? = hasSkillMarkdown ? (try? md.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate : nil
         let dirDate = (try? dir.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
         return "\(mdDate?.timeIntervalSince1970 ?? 0)|\(dirDate?.timeIntervalSince1970 ?? 0)"
     }
@@ -123,7 +127,8 @@ enum SkillScanner {
     private static func makeSkill(canonical: URL) -> Skill {
         let fm = FileManager.default
         let md = canonical.appendingPathComponent("SKILL.md")
-        let fmr = FrontmatterParser.parse(fileURL: md)
+        let hasSKILL = fm.fileExists(atPath: md.path)
+        let fmr = hasSKILL ? FrontmatterParser.parse(fileURL: md) : FrontmatterParser.Result()
 
         var skill = Skill(
             name: fmr.name ?? canonical.lastPathComponent,
@@ -132,6 +137,7 @@ enum SkillScanner {
             canonicalPath: canonical
         )
         skill.hasFrontmatter = fmr.hasFrontmatter
+        skill.hasSkillMarkdown = hasSKILL
         skill.tags = fmr.tags
         skill.summary = fmr.summary ?? ""
 

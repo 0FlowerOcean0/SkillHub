@@ -12,6 +12,7 @@ struct CachedSkillEntry: Codable {
     var fileCount: Int
     var sizeBytes: Int64
     var hasFrontmatter: Bool
+    var hasSkillMarkdown: Bool?
     var tags: [String]
     var summary: String
     var author: String
@@ -31,6 +32,7 @@ struct CachedSkillEntry: Codable {
         self.fileCount = skill.fileCount
         self.sizeBytes = skill.sizeBytes
         self.hasFrontmatter = skill.hasFrontmatter
+        self.hasSkillMarkdown = skill.hasSkillMarkdown
         self.tags = skill.tags
         self.summary = skill.summary
         self.author = skill.author
@@ -58,6 +60,7 @@ struct CachedSkillEntry: Codable {
         skill.fileCount = fileCount
         skill.sizeBytes = sizeBytes
         skill.hasFrontmatter = hasFrontmatter
+        skill.hasSkillMarkdown = hasSkillMarkdown ?? true
         skill.tags = tags
         skill.summary = summary
         skill.author = author

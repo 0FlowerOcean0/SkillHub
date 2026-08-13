@@ -138,9 +138,6 @@ enum ProjectScanner {
         ".claude/skills",
         ".agents/skills",
         ".codex/skills",
-        ".cursor/skills",
-        ".qoder/skills",
-        ".iflow/skills",
     ]
 
     /// 扫描项目里的所有约定 skills 目录。

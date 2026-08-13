@@ -26,7 +26,6 @@ struct DashboardView: View {
                     StatCard(title: "孤儿", value: "\(s.orphan)", icon: "link.badge.plus", tint: .orange, subtitle: "未启用")
                     StatCard(title: "错误", value: "\(s.errors)", icon: "xmark.octagon", tint: .red)
                     StatCard(title: "警告", value: "\(s.warnings)", icon: "exclamationmark.triangle", tint: .yellow)
-                    StatCard(title: "AI 已分析", value: "\(s.analyzed)", icon: "brain", tint: .purple)
                     StatCard(title: "可更新", value: "\(s.updatable)", icon: "arrow.triangle.2.circlepath", tint: .green)
                 }
 
@@ -121,22 +120,16 @@ struct DashboardView: View {
     private func iconForAgent(_ id: String) -> String {
         switch id {
         case "agents": return "shippingbox"
-        case "qoder": return "q.circle"
         case "claude": return "c.circle"
         case "codex": return "chevron.left.forwardslash.chevron.right"
-        case "cursor": return "cursorarrow"
-        case "iflow": return "arrow.triangle.branch"
         default: return "folder"
         }
     }
 
     private func agentColor(_ id: String) -> Color {
         switch id {
-        case "qoder": return .blue
         case "claude": return .purple
         case "codex": return .orange
-        case "cursor": return .cyan
-        case "iflow": return .green
         case "agents": return .accentColor
         default: return .gray
         }
@@ -283,21 +276,28 @@ struct InstallSheet: View {
     @EnvironmentObject var state: AppState
     @Environment(\.dismiss) private var dismiss
     @State private var source = ""
-    @State private var selectedTargets: Set<String> = ["qoder"]
+    @State private var selectedTargets: Set<String> = ["claude"]
+    @State private var isPreparing = false
+    @State private var preparationError: String?
+    @State private var preparedInstall: PreparedSkillInstall?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("安装 Skill").font(.title2.bold())
-            Text("支持：GitHub 仓库 / tree 子目录 URL，或本地目录路径。整仓多个 skills 会全部安装。")
+            Text("支持 Git 仓库、tree 分支子目录 URL 或本地目录。先检查内容，确认后才会安装。")
                 .font(.caption).foregroundStyle(.secondary)
 
             TextField("https://github.com/owner/repo 或 ~/path/to/skill", text: $source)
                 .textFieldStyle(.roundedBorder)
-            Text("支持 `仓库地址@tag` 指定版本，如 https://github.com/owner/repo@v1.0")
+            Text("支持 `仓库地址@tag` 指定版本；tree URL 会先切换到对应分支或 tag。")
                 .font(.caption).foregroundStyle(.secondary)
 
             Text("安装到本体库 \(state.storeDir.path)，并软链到：").font(.callout)
-            HStack {
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 130), alignment: .leading)],
+                alignment: .leading,
+                spacing: 10
+            ) {
                 ForEach(state.targets.filter { $0.id != AgentTarget.canonicalID }) { t in
                     Toggle(t.displayName, isOn: Binding(
                         get: { selectedTargets.contains(t.id) },
@@ -312,18 +312,67 @@ struct InstallSheet: View {
             HStack {
                 Spacer()
                 Button("取消") { dismiss() }
-                Button("安装") {
-                    let enable = state.targets.filter { selectedTargets.contains($0.id) }
-                    state.install(source: source, enableIn: enable) { ok in
-                        if ok { dismiss() }
+                if isPreparing { ProgressView().controlSize(.small) }
+                Button("检查并继续") {
+                    isPreparing = true
+                    preparationError = nil
+                    Task {
+                        do {
+                            preparedInstall = try await state.prepareInstall(source: source)
+                        } catch {
+                            preparationError = error.localizedDescription
+                        }
+                        isPreparing = false
                     }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(source.trimmingCharacters(in: .whitespaces).isEmpty || state.isBusy)
+                .disabled(source.trimmingCharacters(in: .whitespaces).isEmpty || state.isBusy || isPreparing)
             }
         }
         .padding(20)
-        .frame(width: 560)
+        .frame(width: 620)
+        .interactiveDismissDisabled(isPreparing)
+        .sheet(
+            item: Binding(
+                get: { preparedInstall },
+                set: { if $0 == nil { cancelPreparedInstall() } }
+            )
+        ) { prepared in
+            let enabled = state.targets.filter { selectedTargets.contains($0.id) }
+            let targetNames = enabled.map(\.displayName).joined(separator: "、")
+            InstallReviewSheet(
+                prepared: prepared,
+                destinationText: targetNames.isEmpty
+                    ? "仅安装到本体库"
+                    : "安装到本体库，并启用到 \(targetNames)",
+                onCancel: { cancelPreparedInstall() },
+                onConfirm: {
+                    let ok = await state.commitInstall(prepared, enableIn: enabled)
+                    if ok {
+                        preparedInstall = nil
+                        dismiss()
+                    }
+                    return ok
+                }
+            )
+        }
+        .alert(
+            "无法准备安装",
+            isPresented: Binding(
+                get: { preparationError != nil },
+                set: { if !$0 { preparationError = nil } }
+            )
+        ) {
+            Button("知道了") { preparationError = nil }
+        } message: {
+            Text(preparationError ?? "未知错误")
+        }
+    }
+
+    private func cancelPreparedInstall() {
+        guard let preparedInstall else { return }
+        SkillOps.discardPreparedInstall(preparedInstall)
+        self.preparedInstall = nil
     }
 }
 
@@ -449,171 +498,6 @@ struct DoctorSheet: View {
         case .warning: return .orange
         case .info: return .blue
         }
-    }
-}
-
-// MARK: - AI 分析面板
-
-struct AIAnalysisSheet: View {
-    @EnvironmentObject var state: AppState
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        VStack(spacing: 0) {
-            // 固定标题栏
-            HStack {
-                Text("AI 分析").font(.title2.bold())
-                Spacer()
-                if let err = state.aiError {
-                    Label(err, systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.red)
-                        .font(.caption)
-                }
-                if !state.aiAnalyzing {
-                    Button("完成") { dismiss() }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                } else {
-                    Button("关闭") { dismiss() }
-                        .controlSize(.small)
-                }
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 12)
-            .background(Color(nsColor: .windowBackgroundColor))
-
-            Divider()
-
-            // 可滚动内容
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    // 进度
-                    if state.aiAnalyzing {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Image(systemName: "brain")
-                                    .foregroundStyle(.purple)
-                                Text("正在分析 \(state.aiCurrentSkillName)…")
-                                    .font(.callout)
-                            }
-                            ProgressView(value: Double(state.aiProgressDone), total: Double(max(state.aiProgressTotal, 1)))
-                                .tint(.purple)
-                            HStack {
-                                Text("\(state.aiProgressDone) / \(state.aiProgressTotal)")
-                                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                                Spacer()
-                                let pct = state.aiProgressTotal > 0 ? Int(Double(state.aiProgressDone) / Double(state.aiProgressTotal) * 100) : 0
-                                Text("\(pct)%")
-                                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                            }
-                        }
-                        .padding(12)
-                        .background(Color.purple.opacity(0.06))
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                    }
-
-                    // 统计
-                    let analyzed = state.skills.filter(\.hasAnalysis).count
-                    HStack(spacing: 16) {
-                        StatCard(title: "已分析", value: "\(analyzed)", icon: "brain", tint: .purple)
-                        StatCard(title: "未分析", value: "\(state.skills.count - analyzed)", icon: "questionmark.circle", tint: .gray)
-                        StatCard(title: "总 Skill", value: "\(state.skills.count)", icon: "square.grid.2x2", tint: .blue)
-                    }
-
-                    // 标签分布
-                    let allTags = Dictionary(grouping: state.skills.filter(\.hasAnalysis).flatMap(\.tags), by: { $0 })
-                    if !allTags.isEmpty {
-                        GroupBox("标签分布") {
-                            let sorted = allTags.sorted { $0.value.count > $1.value.count }
-                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 8)], spacing: 8) {
-                                ForEach(sorted, id: \.key) { tag, skills in
-                                    HStack {
-                                        Text(tag).font(.caption)
-                                        Spacer()
-                                        Text("\(skills.count)").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                                    }
-                                    .padding(.horizontal, 8).padding(.vertical, 4)
-                                    .background(Color.accentColor.opacity(0.08))
-                                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                                }
-                            }
-                            .padding(6)
-                        }
-                    }
-
-                    // 操作
-                    GroupBox("操作") {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack(spacing: 10) {
-                                Button {
-                                    state.runAIAnalysis(mode: .all)
-                                } label: {
-                                    Label("分析全部", systemImage: "brain")
-                                }
-                                .disabled(state.aiAnalyzing)
-
-                                Button {
-                                    state.runAIAnalysis(mode: .unanalyzed)
-                                } label: {
-                                    Label("分析未分类", systemImage: "brain.head.profile")
-                                }
-                                .disabled(state.aiAnalyzing)
-
-                                if let skill = state.selectedSkill {
-                                    Button {
-                                        state.runAIAnalysis(mode: .single(skill))
-                                    } label: {
-                                        Label("分析 \(skill.name)", systemImage: "wand.and.stars")
-                                    }
-                                    .disabled(state.aiAnalyzing)
-                                }
-                            }
-
-                            if AIAnalysis.findCLI() == nil {
-                                Label("未找到 claude CLI，请先安装", systemImage: "exclamationmark.circle")
-                                    .font(.caption).foregroundStyle(.red)
-                            }
-                        }
-                        .padding(6)
-                    }
-
-                    // 已分析列表
-                    let analyzedSkills = state.skills.filter(\.hasAnalysis).sorted { $0.name < $1.name }
-                    if !analyzedSkills.isEmpty {
-                        GroupBox("已分析结果") {
-                            VStack(spacing: 0) {
-                                ForEach(analyzedSkills) { skill in
-                                    HStack(alignment: .top, spacing: 10) {
-                                        VStack(alignment: .leading, spacing: 4) {
-                                            Text(skill.name).font(.callout.bold())
-                                            if !skill.summary.isEmpty {
-                                                Text(skill.summary).font(.caption).foregroundStyle(.secondary)
-                                                    .lineLimit(2)
-                                            }
-                                        }
-                                        Spacer()
-                                        HStack(spacing: 4) {
-                                            ForEach(skill.tags.prefix(3), id: \.self) { tag in
-                                                Text(tag).font(.system(size: 10))
-                                                    .padding(.horizontal, 6).padding(.vertical, 2)
-                                                    .background(Color.purple.opacity(0.1))
-                                                    .foregroundStyle(.purple)
-                                                    .clipShape(Capsule())
-                                            }
-                                        }
-                                    }
-                                    .padding(.horizontal, 8).padding(.vertical, 6)
-                                    Divider().opacity(0.5)
-                                }
-                            }
-                            .padding(4)
-                        }
-                    }
-                }
-                .padding(20)
-            }
-        }
-        .frame(width: 640, height: 520)
     }
 }
 
@@ -789,13 +673,6 @@ struct ManagerSheet: View {
                                 if let target = groups.first(where: { $0.id == group.id }),
                                    let claude = state.targets.first(where: { $0.id == "claude" }) {
                                     state.batchEnable(skills: target.skills, to: claude)
-                                }
-                            }
-                            .controlSize(.small)
-                            Button("全部启用到 Qoder") {
-                                if let target = groups.first(where: { $0.id == group.id }),
-                                   let qoder = state.targets.first(where: { $0.id == "qoder" }) {
-                                    state.batchEnable(skills: target.skills, to: qoder)
                                 }
                             }
                             .controlSize(.small)

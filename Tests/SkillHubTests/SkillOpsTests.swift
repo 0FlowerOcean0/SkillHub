@@ -332,11 +332,17 @@ final class SkillOpsTests: XCTestCase {
         let box = try TempSandbox()
         let repo = try makeGitFixtureRepo(box)
         let store = box.root.appendingPathComponent("store/skills", isDirectory: true)
+        let lockURL = box.root.appendingPathComponent("store/.skill-lock.json")
 
         let result = try SkillOps.installWithRef(source: "file://\(repo.path)@v1.0",
-                                                 storeDir: store, enableTargets: [])
+                                                 storeDir: store, enableTargets: [],
+                                                 lockFileURL: lockURL)
         XCTAssertEqual(result.installed, ["myskill"])
         XCTAssertEqual(result.resolvedRef, "v1.0")
+        XCTAssertEqual(result.resolvedCommit?.count, 40)
+        let lock = SkillLockFile.load(from: lockURL)
+        XCTAssertEqual(lock?.skills["myskill"]?.ref, "v1.0")
+        XCTAssertEqual(lock?.skills["myskill"]?.resolvedCommit, result.resolvedCommit)
         let md = try String(contentsOf: store.appendingPathComponent("myskill/SKILL.md"), encoding: .utf8)
         XCTAssertTrue(md.contains("v1 content"), "应 checkout 到 tag 版本而不是 HEAD 的 v2")
     }
@@ -404,6 +410,189 @@ final class SkillOpsTests: XCTestCase {
         XCTAssertNil(result.resolvedRef)
         let md = try String(contentsOf: store.appendingPathComponent("myskill/SKILL.md"), encoding: .utf8)
         XCTAssertTrue(md.contains("v2 content"))
+    }
+
+    func testParseGitInstallSourcePreservesTreeRefAndSubdirectory() throws {
+        let parsed = try SkillOps.parseGitInstallSource(
+            "https://github.com/example/catalog/tree/release-1/skills/pdf"
+        )
+
+        XCTAssertEqual(parsed.repository, "https://github.com/example/catalog")
+        XCTAssertEqual(parsed.ref, "release-1")
+        XCTAssertEqual(parsed.subPath, "skills/pdf")
+    }
+
+    func testPrepareInstallTreeURLChecksOutRequestedBranchBeforeSelectingSubdirectory() throws {
+        let box = try TempSandbox()
+        let repo = try makeGitFixtureRepo(box)
+        try runTestGit(["checkout", "-b", "preview"], in: repo)
+        let branchSkill = repo.appendingPathComponent("catalog/branch-only", isDirectory: true)
+        try box.fm.createDirectory(at: branchSkill, withIntermediateDirectories: true)
+        try "---\nname: branch-only\ndescription: Only on preview\n---\n".write(
+            to: branchSkill.appendingPathComponent("SKILL.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try runTestGit(["add", "."], in: repo)
+        try runTestGit([
+            "-c", "user.email=test@example.com", "-c", "user.name=test",
+            "commit", "-m", "preview skill",
+        ], in: repo)
+        try runTestGit(["checkout", "main"], in: repo)
+
+        let source = "file://\(repo.path)/tree/preview/catalog/branch-only"
+        let prepared = try SkillOps.prepareInstall(source: source)
+        defer { SkillOps.discardPreparedInstall(prepared) }
+
+        XCTAssertEqual(prepared.requestedRef, "preview")
+        XCTAssertEqual(prepared.resolvedCommit?.count, 40)
+        XCTAssertEqual(prepared.items.map(\.name), ["branch-only"])
+        XCTAssertEqual(prepared.items.map(\.skillPath), ["."])
+    }
+
+    func testParseGitInstallSourceRejectsTreeURLWithoutRef() {
+        XCTAssertThrowsError(
+            try SkillOps.parseGitInstallSource("https://github.com/example/catalog/tree/")
+        ) { error in
+            XCTAssertTrue(error.localizedDescription.contains("缺少分支"))
+        }
+    }
+
+    func testPrepareInstallSelectsOnlyRequestedSkillAndReportsSkipped() throws {
+        let box = try TempSandbox()
+        let repo = box.root.appendingPathComponent("catalog", isDirectory: true)
+        _ = try box.makeSkillDir(
+            "catalog/skills/pdf",
+            frontmatter: "---\nname: pdf\ndescription: PDF tools\n---\n"
+        )
+        _ = try box.makeSkillDir(
+            "catalog/skills/slides",
+            frontmatter: "---\nname: slides\ndescription: Slide tools\n---\n"
+        )
+
+        let prepared = try SkillOps.prepareInstall(source: repo.path, selectedSkillID: "pdf")
+        defer { SkillOps.discardPreparedInstall(prepared) }
+
+        XCTAssertEqual(prepared.items.map(\.name), ["pdf"])
+        XCTAssertEqual(prepared.skippedSkillNames, ["slides"])
+        XCTAssertEqual(prepared.items.first?.validationWarnings, [])
+        XCTAssertEqual(prepared.items.first?.securityReport.score, 100)
+        XCTAssertFalse(box.fm.fileExists(atPath: box.root.appendingPathComponent("store/skills/pdf").path),
+                       "prepare 阶段不能写入本体库")
+    }
+
+    func testCommitPreparedInstallWritesLockAndEnablesAtomically() throws {
+        let box = try TempSandbox()
+        let source = try box.makeSkillDir(
+            "source/precise",
+            frontmatter: "---\nname: precise\ndescription: Precise install\n---\n"
+        )
+        let store = box.root.appendingPathComponent("store/skills", isDirectory: true)
+        let lockURL = box.root.appendingPathComponent("store/.skill-lock.json")
+        let target = box.makeTarget("agentA", "agent/skills")
+        let prepared = try SkillOps.prepareInstall(source: source.path, selectedSkillID: "precise")
+
+        let result = try SkillOps.commitPreparedInstall(
+            prepared,
+            storeDir: store,
+            enableTargets: [target],
+            lockFileURL: lockURL
+        )
+
+        XCTAssertEqual(result.installed, ["precise"])
+        let installed = store.appendingPathComponent("precise")
+        XCTAssertTrue(box.fm.fileExists(atPath: installed.appendingPathComponent("SKILL.md").path))
+        XCTAssertEqual(
+            target.dir.appendingPathComponent("precise").resolvingSymlinksInPath().standardizedFileURL.path,
+            installed.standardizedFileURL.path
+        )
+        let lock = SkillLockFile.load(from: lockURL)
+        XCTAssertEqual(lock?.skills["precise"]?.sourceType, "local")
+        XCTAssertEqual(lock?.skills["precise"]?.skillFolderHash, result.records.first?.folderHash)
+    }
+
+    func testCommitPreparedInstallRollsBackNewTargetDirectoryWhenLockWriteFails() throws {
+        let box = try TempSandbox()
+        let source = try box.makeSkillDir(
+            "source/rollback",
+            frontmatter: "---\nname: rollback\ndescription: Rollback target directory\n---\n"
+        )
+        let store = box.root.appendingPathComponent("store/skills", isDirectory: true)
+        let target = AgentTarget(
+            id: "new-agent",
+            displayName: "New Agent",
+            dir: box.root.appendingPathComponent("new-agent/skills", isDirectory: true)
+        )
+        let invalidLockURL = box.root.appendingPathComponent("locked-as-directory", isDirectory: true)
+        try box.fm.createDirectory(at: invalidLockURL, withIntermediateDirectories: true)
+        let prepared = try SkillOps.prepareInstall(source: source.path)
+        defer { SkillOps.discardPreparedInstall(prepared) }
+
+        XCTAssertThrowsError(try SkillOps.commitPreparedInstall(
+            prepared,
+            storeDir: store,
+            enableTargets: [target],
+            lockFileURL: invalidLockURL
+        ))
+        XCTAssertFalse(box.fm.fileExists(atPath: store.appendingPathComponent("rollback").path))
+        XCTAssertFalse(box.fm.fileExists(atPath: target.dir.path),
+                       "失败回滚不能留下本次新建的空 Agent 目录")
+    }
+
+    func testCommitPreparedInstallPreflightLeavesNoPartialInstallOnConflict() throws {
+        let box = try TempSandbox()
+        let source = try box.makeSkillDir(
+            "source/conflict",
+            frontmatter: "---\nname: conflict\ndescription: Conflict test\n---\n"
+        )
+        let store = box.root.appendingPathComponent("store/skills", isDirectory: true)
+        let target = box.makeTarget("agentA", "agent/skills")
+        _ = try box.makeSkillDir(
+            "agent/skills/conflict",
+            frontmatter: "---\nname: conflict\ndescription: Existing\n---\n"
+        )
+        let prepared = try SkillOps.prepareInstall(source: source.path, selectedSkillID: "conflict")
+
+        XCTAssertThrowsError(try SkillOps.commitPreparedInstall(
+            prepared,
+            storeDir: store,
+            enableTargets: [target]
+        ))
+        XCTAssertTrue(box.fm.fileExists(atPath: prepared.stagingRoot.path),
+                      "提交失败后应保留冻结内容，以便用户直接重试")
+        XCTAssertFalse(box.fm.fileExists(atPath: store.appendingPathComponent("conflict").path),
+                       "预检冲突后本体库不能留下半成品")
+        XCTAssertTrue(box.fm.fileExists(atPath: target.dir.appendingPathComponent("conflict/SKILL.md").path),
+                      "已有目标不能被修改")
+
+        // 用户解决冲突后，同一份已审查内容应能直接重试，不重新下载。
+        try box.fm.removeItem(at: target.dir.appendingPathComponent("conflict"))
+        let retry = try SkillOps.commitPreparedInstall(
+            prepared,
+            storeDir: store,
+            enableTargets: [target]
+        )
+        XCTAssertEqual(retry.installed, ["conflict"])
+        XCTAssertFalse(box.fm.fileExists(atPath: prepared.stagingRoot.path),
+                       "提交成功后应清理冻结内容")
+    }
+
+    func testPrepareInstallRejectsSymlinkEscapingSkillDirectory() throws {
+        let box = try TempSandbox()
+        let source = try box.makeSkillDir(
+            "source/unsafe",
+            frontmatter: "---\nname: unsafe\ndescription: Unsafe link\n---\n"
+        )
+        let outside = box.root.appendingPathComponent("secret.txt")
+        try "secret".write(to: outside, atomically: true, encoding: .utf8)
+        try box.fm.createSymbolicLink(
+            atPath: source.appendingPathComponent("secret-link").path,
+            withDestinationPath: outside.path
+        )
+
+        XCTAssertThrowsError(try SkillOps.prepareInstall(source: source.path)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("目录外的软链接"))
+        }
     }
 
     // MARK: - trash 联动清理 copy 副本

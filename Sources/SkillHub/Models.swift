@@ -3,8 +3,8 @@ import Foundation
 // MARK: - Agent 目标（每个 agent 的 skills 目录）
 
 struct AgentTarget: Identifiable, Hashable, Codable {
-    let id: String          // 如 "qoder"
-    let displayName: String // 如 "Qoder"
+    let id: String          // 如 "claude"
+    let displayName: String // 如 "Claude Code"
     let dir: URL
 
     var exists: Bool {
@@ -18,11 +18,8 @@ struct AgentTarget: Identifiable, Hashable, Codable {
     static func builtin(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> [AgentTarget] {
         [
             AgentTarget(id: "agents", displayName: "本体库 (.agents)", dir: home.appendingPathComponent(".agents/skills")),
-            AgentTarget(id: "qoder", displayName: "Qoder", dir: home.appendingPathComponent(".qoder/skills")),
             AgentTarget(id: "claude", displayName: "Claude Code", dir: home.appendingPathComponent(".claude/skills")),
             AgentTarget(id: "codex", displayName: "Codex", dir: home.appendingPathComponent(".codex/skills")),
-            AgentTarget(id: "cursor", displayName: "Cursor", dir: home.appendingPathComponent(".cursor/skills")),
-            AgentTarget(id: "iflow", displayName: "iFlow", dir: home.appendingPathComponent(".iflow/skills")),
         ]
     }
 
@@ -74,6 +71,7 @@ struct Skill: Identifiable, Hashable {
     var fileCount: Int = 0
     var sizeBytes: Int64 = 0
     var hasFrontmatter: Bool = false
+    var hasSkillMarkdown: Bool = true
     var tags: [String] = []
     var summary: String = ""
     var author: String = ""
@@ -92,8 +90,6 @@ struct Skill: Identifiable, Hashable {
     var sizeDisplay: String {
         ByteCountFormatter.string(fromByteCount: sizeBytes, countStyle: .file)
     }
-
-    var hasAnalysis: Bool { !tags.isEmpty || !summary.isEmpty }
 }
 
 // MARK: - 体检问题
@@ -201,6 +197,7 @@ struct SkillLockFile: Codable {
         var installedAt: Date?
         var updatedAt: Date?
         var ref: String?
+        var resolvedCommit: String? = nil
     }
 
     static func load(from url: URL) -> SkillLockFile? {
@@ -210,11 +207,33 @@ struct SkillLockFile: Codable {
         return try? decoder.decode(SkillLockFile.self, from: data)
     }
 
-    func save(to url: URL) {
+    mutating func recordInstall(_ record: SkillInstallRecord) {
+        skills[record.skillName] = SkillLockEntry(
+            source: record.source,
+            sourceType: record.sourceType,
+            sourceUrl: record.sourceURL,
+            skillPath: record.skillPath,
+            skillFolderHash: record.folderHash,
+            installedAt: record.installedAt,
+            updatedAt: record.installedAt,
+            ref: record.resolvedRef,
+            resolvedCommit: record.resolvedCommit
+        )
+    }
+
+    func saveThrowing(to url: URL) throws {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? encoder.encode(self) else { return }
-        try? data.write(to: url)
+        let data = try encoder.encode(self)
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try data.write(to: url, options: .atomic)
+    }
+
+    func save(to url: URL) {
+        try? saveThrowing(to: url)
     }
 }

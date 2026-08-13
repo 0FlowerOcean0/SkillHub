@@ -2,26 +2,12 @@ import SwiftUI
 
 // MARK: - 技能市场视图（自包含模块，不依赖 AppState）
 //
-// 对外接口（父 agent 接线时只需知道这些）：
-//   MarketplaceView(onInstall:)
-//     - onInstall: (String) async -> Bool，参数为仓库源标识（"owner/repo"，如 "anthropics/skills"），
-//       返回安装是否成功。可省略，省略时用 `MarketplaceView.defaultInstallAction`。
-//   MarketplaceViewModel(onInstall:service:)、MarketplaceService、MarketplaceSkill 均为内部实现细节，
-//   但都是 internal 可测的。
-//
-// 接线示例（父 agent 自行完成，本模块不改任何现有文件）：
-//   MarketplaceView { source in
-//       await Task.detached {
-//           (try? SkillOps.install(source: "https://github.com/\(source)",
-//                                  storeDir: state.storeDir,
-//                                  enableTargets: state.enabledTargets)) != nil
-//       }.value
-//   }
+// 安装分为 prepare / commit 两步：prepare 只下载并检查，用户在预览页确认后才 commit。
 
 // MARK: - 安装状态
 
 enum MarketplaceInstallState {
-    case idle, installing, success, failed
+    case idle, preparing, ready, installing, success, failed
 }
 
 // MARK: - ViewModel
@@ -40,18 +26,27 @@ final class MarketplaceViewModel: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var installStates: [String: MarketplaceInstallState] = [:]
     @Published private(set) var descriptions: [String: String] = [:]
+    @Published private(set) var preparedInstall: PreparedSkillInstall?
+    @Published private(set) var preparationError: String?
+    @Published private(set) var preparingSkillID: String?
 
     private let service: MarketplaceService
-    private let onInstall: (String) async -> Bool
+    private let onPrepare: (MarketplaceSkill) async throws -> PreparedSkillInstall
+    private let onCommit: (PreparedSkillInstall) async -> Bool
 
     private var searchTask: Task<Void, Never>?
     private var lastMode: LoadMode = .popular
     private var attemptedDescriptions = Set<String>()
+    private var preparedSkillID: String?
 
-    init(service: MarketplaceService = MarketplaceService(),
-         onInstall: @escaping (String) async -> Bool) {
+    init(
+        service: MarketplaceService = MarketplaceService(),
+        onPrepare: @escaping (MarketplaceSkill) async throws -> PreparedSkillInstall,
+        onCommit: @escaping (PreparedSkillInstall) async -> Bool
+    ) {
         self.service = service
-        self.onInstall = onInstall
+        self.onPrepare = onPrepare
+        self.onCommit = onCommit
     }
 
     /// 首次出现时装载热门榜单
@@ -109,14 +104,47 @@ final class MarketplaceViewModel: ObservableObject {
         installStates[skill.id] ?? .idle
     }
 
-    func install(_ skill: MarketplaceSkill) {
-        guard installState(for: skill) != .installing else { return }
-        installStates[skill.id] = .installing
+    func prepare(_ skill: MarketplaceSkill) {
+        guard preparingSkillID == nil else { return }
+        preparationError = nil
+        preparingSkillID = skill.id
+        installStates[skill.id] = .preparing
         Task {
-            let ok = await onInstall(skill.source)
-            installStates[skill.id] = ok ? .success : .failed
+            do {
+                let prepared = try await onPrepare(skill)
+                preparedInstall = prepared
+                preparedSkillID = skill.id
+                installStates[skill.id] = .ready
+            } catch {
+                preparationError = error.localizedDescription
+                installStates[skill.id] = .failed
+            }
+            preparingSkillID = nil
         }
     }
+
+    func commitPreparedInstall() async -> Bool {
+        guard let preparedInstall else { return false }
+        let skillID = preparedSkillID
+        if let skillID { installStates[skillID] = .installing }
+        let ok = await onCommit(preparedInstall)
+        if let skillID { installStates[skillID] = ok ? .success : .failed }
+        if ok {
+            self.preparedInstall = nil
+            preparedSkillID = nil
+        }
+        return ok
+    }
+
+    func cancelPreparedInstall() {
+        guard let preparedInstall else { return }
+        SkillOps.discardPreparedInstall(preparedInstall)
+        self.preparedInstall = nil
+        if let preparedSkillID { installStates[preparedSkillID] = .idle }
+        preparedSkillID = nil
+    }
+
+    func clearPreparationError() { preparationError = nil }
 
     // MARK: 描述补取
 
@@ -137,9 +165,14 @@ struct MarketplaceView: View {
     @StateObject private var viewModel: MarketplaceViewModel
     @Environment(\.dismiss) private var dismiss
 
-    /// - Parameter onInstall: 安装闭包。参数为仓库源标识（"owner/repo"），返回是否成功。
-    init(onInstall: @escaping (String) async -> Bool = MarketplaceView.defaultInstallAction) {
-        _viewModel = StateObject(wrappedValue: MarketplaceViewModel(onInstall: onInstall))
+    init(
+        onPrepare: @escaping (MarketplaceSkill) async throws -> PreparedSkillInstall,
+        onCommit: @escaping (PreparedSkillInstall) async -> Bool
+    ) {
+        _viewModel = StateObject(wrappedValue: MarketplaceViewModel(
+            onPrepare: onPrepare,
+            onCommit: onCommit
+        ))
     }
 
     var body: some View {
@@ -149,6 +182,33 @@ struct MarketplaceView: View {
             content
         }
         .onAppear { viewModel.onAppear() }
+        .onDisappear {
+            if viewModel.preparedInstall != nil { viewModel.cancelPreparedInstall() }
+        }
+        .sheet(
+            item: Binding(
+                get: { viewModel.preparedInstall },
+                set: { if $0 == nil { viewModel.cancelPreparedInstall() } }
+            )
+        ) { prepared in
+            InstallReviewSheet(
+                prepared: prepared,
+                destinationText: "安装到本体库，安装后再选择启用平台",
+                onCancel: { viewModel.cancelPreparedInstall() },
+                onConfirm: { await viewModel.commitPreparedInstall() }
+            )
+        }
+        .alert(
+            "无法准备安装",
+            isPresented: Binding(
+                get: { viewModel.preparationError != nil },
+                set: { if !$0 { viewModel.clearPreparationError() } }
+            )
+        ) {
+            Button("知道了") { viewModel.clearPreparationError() }
+        } message: {
+            Text(viewModel.preparationError ?? "未知错误")
+        }
     }
 
     // MARK: 头部（标题 + 搜索框）
@@ -228,7 +288,7 @@ struct MarketplaceView: View {
                     skill: skill,
                     description: viewModel.descriptions[skill.id] ?? skill.description,
                     installState: viewModel.installState(for: skill),
-                    onInstall: { viewModel.install(skill) }
+                    onInstall: { viewModel.prepare(skill) }
                 )
                 .task { await viewModel.loadDescriptionIfNeeded(for: skill) }
             }
@@ -236,22 +296,6 @@ struct MarketplaceView: View {
         }
     }
 
-    // MARK: - 默认安装实现（未接线时的退路）
-
-    /// 默认实现：把仓库源标识（"owner/repo"）拼成 GitHub 仓库 URL，调用现有
-    /// `SkillOps.install(source:storeDir:enableTargets:)` 整仓安装到 canonical 本体库
-    /// `~/.agents/skills`，不自动启用到任何 agent。
-    ///
-    /// 注意：多 skill 仓库会把仓库里所有 SKILL.md 都装上（SkillOps 的既有行为）。
-    /// 父 agent 正式接线时应注入自己的闭包，带上 AppState 里的 storeDir 与启用目标。
-    static func defaultInstallAction(source: String) async -> Bool {
-        let storeDir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".agents/skills")
-        let repo = source.hasPrefix("http") ? source : "https://github.com/\(source)"
-        return await Task.detached(priority: .userInitiated) {
-            (try? SkillOps.install(source: repo, storeDir: storeDir, enableTargets: [])) != nil
-        }.value
-    }
 }
 
 // MARK: - 行视图
@@ -286,7 +330,7 @@ private struct MarketplaceRow: View {
                     }
                     Link("详情", destination: skill.skillPageURL)
                         .font(.caption)
-                    Text("多 skill 仓库将整仓安装")
+                    Text("仅安装此 Skill")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
@@ -304,6 +348,15 @@ private struct MarketplaceRow: View {
             Button("安装") { onInstall() }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
+        case .preparing:
+            ProgressView()
+                .controlSize(.small)
+                .frame(width: 52)
+                .help("正在下载并检查")
+        case .ready:
+            Label("待确认", systemImage: "doc.text.magnifyingglass")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         case .installing:
             ProgressView()
                 .controlSize(.small)
@@ -318,5 +371,199 @@ private struct MarketplaceRow: View {
                 .tint(.red)
                 .controlSize(.small)
         }
+    }
+}
+
+// MARK: - 安装确认
+
+struct InstallReviewSheet: View {
+    let prepared: PreparedSkillInstall
+    let destinationText: String
+    let onCancel: () -> Void
+    let onConfirm: () async -> Bool
+
+    @State private var isInstalling = false
+    @State private var hasReviewedRisk = false
+    @State private var localError: String?
+
+    private var hasHighRisk: Bool {
+        prepared.items.contains { $0.securityReport.highCount > 0 }
+    }
+
+    private var canInstall: Bool {
+        !isInstalling && (!hasHighRisk || hasReviewedRisk)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("确认安装")
+                        .font(.title2.bold())
+                    Text("内容已下载到临时目录，确认前不会修改你的 Skills。")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("取消", action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding(20)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    sourceSection
+                    ForEach(prepared.items) { item in
+                        itemSection(item)
+                    }
+                    if !prepared.skippedSkillNames.isEmpty {
+                        Label(
+                            "仓库中另外发现 \(prepared.skippedSkillNames.count) 个 Skills，本次不会安装。",
+                            systemImage: "checkmark.shield"
+                        )
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    }
+                    if hasHighRisk {
+                        Toggle("我已查看高危命中，仍要安装", isOn: $hasReviewedRisk)
+                            .toggleStyle(.checkbox)
+                    }
+                    if let localError {
+                        Label(localError, systemImage: "exclamationmark.triangle.fill")
+                            .font(.callout)
+                            .foregroundStyle(.red)
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                }
+                .padding(20)
+            }
+
+            Divider()
+
+            HStack {
+                Label(destinationText, systemImage: "internaldrive")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if isInstalling { ProgressView().controlSize(.small) }
+                Button(hasHighRisk ? "仍要安装" : "安装") {
+                    isInstalling = true
+                    localError = nil
+                    Task {
+                        let ok = await onConfirm()
+                        if !ok {
+                            localError = "安装没有完成，原有 Skills 未被修改。请查看主窗口中的错误详情。"
+                            isInstalling = false
+                        }
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canInstall)
+            }
+            .padding(16)
+        }
+        .frame(minWidth: 620, idealWidth: 680, minHeight: 520, idealHeight: 620)
+        .interactiveDismissDisabled(isInstalling)
+    }
+
+    private var sourceSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("来源")
+                .font(.headline)
+            Text(prepared.sourceURL ?? prepared.source)
+                .font(.callout.monospaced())
+                .textSelection(.enabled)
+            if let commit = prepared.resolvedCommit {
+                Text("Commit \(String(commit.prefix(12)))")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+        }
+    }
+
+    private func itemSection(_ item: PreparedSkillInstall.Item) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(item.name)
+                        .font(.headline)
+                    if !item.descriptionText.isEmpty {
+                        Text(item.descriptionText)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(3)
+                    }
+                }
+                Spacer()
+                securityBadge(item.securityReport)
+            }
+
+            HStack(spacing: 16) {
+                Label("\(item.fileCount) 个文件", systemImage: "doc.on.doc")
+                Label(item.sizeDisplay, systemImage: "externaldrive")
+                Text(item.skillPath)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            if !item.validationWarnings.isEmpty {
+                VStack(alignment: .leading, spacing: 5) {
+                    ForEach(item.validationWarnings, id: \.self) { warning in
+                        Label(warning, systemImage: "exclamationmark.triangle")
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.orange)
+            }
+
+            if !item.securityReport.findings.isEmpty {
+                DisclosureGroup("查看安全命中（\(item.securityReport.findings.count)）") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(Array(item.securityReport.findings.prefix(20).enumerated()), id: \.offset) { _, finding in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("\(finding.severity.displayName) · \(finding.message)")
+                                    .font(.caption.bold())
+                                Text("\(finding.file)\(finding.line.map { ":\($0)" } ?? "") · \(finding.snippet)")
+                                    .font(.caption2.monospaced())
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                    }
+                    .padding(.top, 6)
+                }
+                .font(.callout)
+            }
+
+            DisclosureGroup("查看文件清单") {
+                Text(item.files.joined(separator: "\n"))
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 6)
+            }
+            .font(.callout)
+        }
+        .padding(14)
+        .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func securityBadge(_ report: SecurityReport) -> some View {
+        let color: Color = report.highCount > 0 ? .red : (report.mediumCount > 0 ? .orange : .green)
+        return Label("\(report.score) · \(report.grade.rawValue)", systemImage: "shield.checkered")
+            .font(.caption.bold())
+            .foregroundStyle(color)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(color.opacity(0.1), in: Capsule())
     }
 }
