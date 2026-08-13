@@ -30,13 +30,19 @@ xcrun stapler validate "$APP_PATH"
 # Recreate the archive so the stapled ticket is included in the downloadable artifact.
 rm -f "$ARCHIVE_PATH"
 ditto -c -k --keepParent "$APP_PATH" "$ARCHIVE_PATH"
-shasum -a 256 "$ARCHIVE_PATH" > "$ARCHIVE_PATH.sha256"
+(
+    cd "$DIST_DIR"
+    shasum -a 256 "$(basename "$ARCHIVE_PATH")" > "$(basename "$ARCHIVE_PATH").sha256"
+)
 SKIP_CHECKSUM=1 DMG_PATH="$DMG_PATH" "$ROOT_DIR/Scripts/make_dmg.sh"
 codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG_PATH"
 xcrun notarytool submit "$DMG_PATH" --keychain-profile "$NOTARY_PROFILE" --wait
 xcrun stapler staple "$DMG_PATH"
 xcrun stapler validate "$DMG_PATH"
-shasum -a 256 "$DMG_PATH" > "$DMG_PATH.sha256"
+(
+    cd "$DIST_DIR"
+    shasum -a 256 "$(basename "$DMG_PATH")" > "$(basename "$DMG_PATH").sha256"
+)
 spctl --assess --type execute --verbose=2 "$APP_PATH"
 
 echo "✅ 发布产物：$ARCHIVE_PATH"

@@ -34,7 +34,10 @@ hdiutil create \
 
 hdiutil verify "$DMG_PATH"
 if [[ "${SKIP_CHECKSUM:-0}" != "1" ]]; then
-    shasum -a 256 "$DMG_PATH" > "$DMG_PATH.sha256"
+    (
+        cd "$(dirname "$DMG_PATH")"
+        shasum -a 256 "$(basename "$DMG_PATH")" > "$(basename "$DMG_PATH").sha256"
+    )
 fi
 
 echo "✅ DMG：$DMG_PATH"
