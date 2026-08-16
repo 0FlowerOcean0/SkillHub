@@ -67,4 +67,3 @@ jobs:
           path: windows/src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: error
           retention-days: 14
-

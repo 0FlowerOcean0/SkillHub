@@ -50,4 +50,3 @@ Windows 版把 `C:\Users\<你>\.agents\skills` 作为唯一真实本体库。平
 - 停用只移除由目录链接表达的启用项，不触碰本体库。
 
 GitHub Actions 会在真实 `windows-latest` 环境中执行前端构建、Rust 测试和 NSIS 打包，并上传 `.exe` 产物。
-
