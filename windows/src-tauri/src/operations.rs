@@ -89,7 +89,9 @@ fn create_directory_link(target: &Path, link: &Path) -> Result<(), String> {
 
 #[cfg(windows)]
 fn remove_directory_link(link: &Path) -> Result<(), String> {
-    if junction::exists(link) {
+    let is_junction = junction::exists(link)
+        .map_err(|error| format!("无法检查 Junction：{error}"))?;
+    if is_junction {
         junction::delete(link).map_err(|error| format!("删除 Junction 失败：{error}"))
     } else {
         fs::remove_dir(link).map_err(|error| format!("删除目录链接失败：{error}"))

@@ -150,7 +150,7 @@ pub fn scan_all() -> Result<AppSnapshot, String> {
 pub(crate) fn is_link_like(path: &Path) -> bool {
     #[cfg(windows)]
     {
-        junction::exists(path)
+        junction::exists(path).unwrap_or(false)
             || fs::symlink_metadata(path)
                 .map(|metadata| metadata.file_type().is_symlink())
                 .unwrap_or(false)
