@@ -1,4 +1,0 @@
-ignoreScripts: false
-
-onlyBuiltDependencies:
-  - esbuild

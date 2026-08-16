@@ -42,9 +42,6 @@ importers:
       '@vitejs/plugin-react':
         specifier: 6.0.5
         version: 6.0.5(vite@8.2.1(esbuild@0.28.2)(jiti@2.7.0))
-      esbuild:
-        specifier: 0.28.2
-        version: 0.28.2
       tailwindcss:
         specifier: 4.3.3
         version: 4.3.3
@@ -1309,6 +1306,7 @@ snapshots:
       '@esbuild/win32-arm64': 0.28.2
       '@esbuild/win32-ia32': 0.28.2
       '@esbuild/win32-x64': 0.28.2
+    optional: true
 
   fdir@6.5.0(picomatch@4.0.5):
     optionalDependencies:
