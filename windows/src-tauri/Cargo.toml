@@ -1,0 +1,25 @@
+[package]
+name = "skillhub-windows"
+version = "0.1.0"
+description = "SkillHub for Windows"
+authors = ["花海"]
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "skillhub_windows_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "SkillHub"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", features = [] }
+
+[target.'cfg(windows)'.dependencies]
+junction = "2.0.0"

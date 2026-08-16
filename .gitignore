@@ -29,3 +29,10 @@ app/
 
 # Local editor settings
 .vscode/
+
+# Windows / Tauri
+windows/node_modules/
+windows/dist/
+windows/src-tauri/target/
+windows/src-tauri/gen/
+.pnpm-store/

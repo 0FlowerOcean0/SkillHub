@@ -5,6 +5,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- 新增独立的 Windows 预览客户端：使用 Tauri 2 + React + Rust，支持本体库与常见 Agent 平台扫描、搜索、Junction 启停、断链识别、`SKILL.md` 只读预览和资源管理器定位。
+- 新增 Windows `windows-latest` 自动化门禁，验证前端生产构建、Rust 单元测试与 NSIS 安装包生成，并保留可下载的 `.exe` 构建产物。
+
+### Security
+
+- Windows 启停操作只允许删除 Junction/目录链接；遇到同名真实目录时拒绝覆盖或删除。
+
 ## [1.3.0] - 2026-08-13
 
 ### Changed
