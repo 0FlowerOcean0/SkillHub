@@ -4,6 +4,8 @@ SkillHub Windows 是与现有 macOS 客户端并行维护的原生桌面版本�
 
 当前预览版专注于一条最重要的闭环：**看清 Skills，安全地启用或停用它们。**
 
+![SkillHub Windows 主界面](../docs/assets/skillhub-windows-overview.jpg)
+
 ## 当前能力
 
 - 扫描 `~/.agents/skills`、Claude Code、Codex、Cursor、Cline、Windsurf、Roo Code 与 Continue。

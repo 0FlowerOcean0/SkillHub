@@ -7,19 +7,23 @@
 <p align="center">
   <strong>把散落的 Agent Skills，收进一个清晰、可信、可逆的本体库。</strong>
   <br>
-  一款为 Claude Code、Codex 与其他 AI Agent 设计的原生 macOS Skills 管理工具。
+  一款为 Claude Code、Codex 与其他 AI Agent 设计的 macOS / Windows Skills 管理工具。
 </p>
 
 <p align="center">
   <a href="https://github.com/0FlowerOcean0/SkillHub/releases/latest"><img alt="GitHub Release" src="https://img.shields.io/github/v/release/0FlowerOcean0/SkillHub?display_name=tag&sort=semver&style=flat-square"></a>
   <a href="https://github.com/0FlowerOcean0/SkillHub/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/0FlowerOcean0/SkillHub/ci.yml?branch=main&label=CI&style=flat-square"></a>
+  <a href="https://github.com/0FlowerOcean0/SkillHub/actions/workflows/windows-ci.yml"><img alt="Windows CI" src="https://img.shields.io/github/actions/workflow/status/0FlowerOcean0/SkillHub/windows-ci.yml?branch=main&label=Windows&style=flat-square"></a>
   <img alt="macOS 14+" src="https://img.shields.io/badge/macOS-14%2B-111111?logo=apple&style=flat-square">
+  <img alt="Windows 10/11" src="https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?logo=windows11&logoColor=white&style=flat-square">
   <img alt="Swift 5.9+" src="https://img.shields.io/badge/Swift-5.9%2B-F05138?logo=swift&logoColor=white&style=flat-square">
   <a href="./LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/License-MIT-2ea44f?style=flat-square"></a>
 </p>
 
 <p align="center">
   <a href="https://github.com/0FlowerOcean0/SkillHub/releases/download/v1.3.0/SkillHub-1.3.0-macos-universal.dmg"><strong>下载 macOS DMG</strong></a>
+  ·
+  <a href="https://github.com/0FlowerOcean0/SkillHub/releases/download/windows-v0.1.0/SkillHub_0.1.0_x64-setup.exe"><strong>下载 Windows EXE</strong></a>
   ·
   <a href="https://github.com/0FlowerOcean0/SkillHub/releases/latest">查看最新版本</a>
   ·
@@ -38,6 +42,14 @@
   <sub>真实运行界面 · 原生 macOS 三栏布局</sub>
 </p>
 
+<p align="center">
+  <img src="./docs/assets/skillhub-windows-overview.jpg" width="100%" alt="SkillHub Windows 技能管理主界面">
+</p>
+
+<p align="center">
+  <sub>Windows Preview · Tauri + Rust 三栏布局</sub>
+</p>
+
 ## 一个 skill，只保留一份
 
 Claude Code、Codex、Cursor、Qoder……每个平台都维护自己的 skills 目录。时间一长，同一个 skill 会被复制很多份：版本不同、来源不明、软链接失效，想换机时也不知道该带走哪一份。
@@ -50,6 +62,8 @@ SkillHub 只做一件核心的事：将真实本体统一放进 `~/.agents/skill
 ~/.codex/skills/your-skill        → 相对软链接
 其他 Agent/your-skill              → 相对软链接或受控副本
 ```
+
+Windows 版遵循同一原则，并使用 NTFS Junction 连接各平台目录，不需要管理员权限。
 
 这样一来，更新一次，所有平台同步生效；停用某个平台，只移除链接，不碰本体。
 
@@ -72,7 +86,7 @@ SkillHub 只做一件核心的事：将真实本体统一放进 `~/.agents/skill
   </tr>
 </table>
 
-## 快速开始
+## macOS 快速开始
 
 1. 下载 [SkillHub 1.3.0 通用版 DMG](https://github.com/0FlowerOcean0/SkillHub/releases/download/v1.3.0/SkillHub-1.3.0-macos-universal.dmg)。
 2. 打开 DMG，将 SkillHub 拖入「应用程序」。
@@ -81,6 +95,16 @@ SkillHub 只做一件核心的事：将真实本体统一放进 `~/.agents/skill
 > 当前公开 DMG 使用 ad-hoc 签名，尚未接入 Apple 公证，因此 macOS 首次打开时可能显示安全提示。源码、构建脚本与 [SHA-256 校验文件](https://github.com/0FlowerOcean0/SkillHub/releases/download/v1.3.0/SkillHub-1.3.0-macos-universal.dmg.sha256) 均公开可审查。
 
 **运行要求：** macOS 14.0 Sonoma 或更高；DMG 同时支持 Apple Silicon 与 Intel Mac。
+
+## Windows 快速开始
+
+1. 下载 [SkillHub Windows 0.1.0 安装包](https://github.com/0FlowerOcean0/SkillHub/releases/download/windows-v0.1.0/SkillHub_0.1.0_x64-setup.exe)。
+2. 运行安装程序；当前使用按用户安装，不需要写入系统级目录。
+3. 打开 SkillHub，应用会扫描本体库以及 Claude Code、Codex、Cursor 等常见 Agent 目录。
+
+> Windows 版目前是预览版，聚焦扫描、搜索、Junction 启停、断链识别与 `SKILL.md` 预览。市场、Doctor、Preset、Manifest 等完整能力仍优先使用 macOS 版。安装包目前未购买商业代码签名证书，Windows 首次运行可能显示 SmartScreen 提示。
+
+**运行要求：** 64 位 Windows 10 或 Windows 11，并具备 Microsoft Edge WebView2 Runtime。Windows 源码与构建说明见 [`windows/README.md`](./windows/README.md)。
 
 ## 发现、审查，再安装
 
