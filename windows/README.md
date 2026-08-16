@@ -34,7 +34,7 @@ pnpm build
 运行 Rust 测试并生成 NSIS 安装包：
 
 ```powershell
-cargo test --manifest-path src-tauri/Cargo.toml
+cargo test --locked --manifest-path src-tauri/Cargo.toml
 pnpm tauri build --bundles nsis
 ```
 

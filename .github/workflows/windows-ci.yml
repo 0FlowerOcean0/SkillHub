@@ -56,7 +56,9 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             windows/src-tauri/target/
-          key: windows-cargo-${{ hashFiles('windows/src-tauri/Cargo.toml') }}
+          key: windows-cargo-${{ hashFiles('windows/src-tauri/Cargo.toml', 'windows/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            windows-cargo-
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
@@ -65,7 +67,7 @@ jobs:
         run: pnpm build
 
       - name: Test native core
-        run: cargo test --release --manifest-path src-tauri/Cargo.toml
+        run: cargo test --release --locked --manifest-path src-tauri/Cargo.toml
 
       - name: Build Windows installer
         run: pnpm tauri build --bundles nsis
